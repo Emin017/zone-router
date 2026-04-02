@@ -335,19 +335,12 @@ async fn shutdown_force_closes_after_timeout() {
         .expect("timed out waiting for backend signal")
         .expect("signal channel dropped");
 
-    // Replicate main()'s shutdown path: set shutdown flag, wait 5s, abort
-    state.write().await.shutdown = true;
+    // Signal graceful shutdown (equivalent to TUI exiting)
     let _ = shutdown_tx.send(true);
 
+    // Call the production shutdown function — the same code path as main()
     let start = std::time::Instant::now();
-
-    if tokio::time::timeout(Duration::from_secs(5), &mut server_handle)
-        .await
-        .is_err()
-    {
-        server_handle.abort();
-    }
-
+    api_router::proxy::server::force_shutdown(state, &mut server_handle).await;
     let elapsed = start.elapsed();
 
     // The server should NOT have exited gracefully (the request hangs forever),

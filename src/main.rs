@@ -82,13 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _ = tui_handle.await;
 
-    state.write().await.shutdown = true;
-    if tokio::time::timeout(std::time::Duration::from_secs(5), &mut server_handle)
-        .await
-        .is_err()
-    {
-        server_handle.abort();
-    }
+    api_router::proxy::server::force_shutdown(state, &mut server_handle).await;
 
     Ok(())
 }

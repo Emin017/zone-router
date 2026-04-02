@@ -2,9 +2,11 @@ use crate::state::AppState;
 use axum::extract::DefaultBodyLimit;
 use axum::Router;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 const BODY_LIMIT: usize = 200 * 1024 * 1024; // 200MB
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub fn build_router(state: Arc<RwLock<AppState>>) -> Router {
     Router::new()
@@ -28,4 +30,19 @@ pub async fn start_with_listener(
         })
         .await?;
     Ok(())
+}
+
+/// Waits up to 5 seconds for the server to shut down gracefully, then
+/// force-aborts it. Sets the shutdown flag on state before waiting.
+pub async fn force_shutdown(
+    state: Arc<RwLock<AppState>>,
+    server_handle: &mut tokio::task::JoinHandle<()>,
+) {
+    state.write().await.shutdown = true;
+    if tokio::time::timeout(SHUTDOWN_TIMEOUT, &mut *server_handle)
+        .await
+        .is_err()
+    {
+        server_handle.abort();
+    }
 }
