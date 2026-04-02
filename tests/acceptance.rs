@@ -349,6 +349,14 @@ async fn shutdown_force_closes_after_timeout() {
         elapsed >= Duration::from_secs(4),
         "shutdown completed in {elapsed:?} — too fast, the 5s forced-abort was not exercised"
     );
+
+    // Prove the server task was actually terminated by the abort.
+    // Await the handle — it should complete promptly since abort was called.
+    let join_result = tokio::time::timeout(Duration::from_secs(1), server_handle).await;
+    assert!(join_result.is_ok(), "server task should complete promptly after force_shutdown abort");
+    // The join result is Err(JoinError::Cancelled) because the task was aborted
+    let task_result = join_result.unwrap();
+    assert!(task_result.unwrap_err().is_cancelled(), "server task should have been cancelled by abort");
 }
 
 // --- SSE mid-stream disconnect ---
