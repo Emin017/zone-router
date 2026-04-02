@@ -1,0 +1,15 @@
+target/
+result
+result-*
+
+.direnv/
+.envrc
+
+.codex
+.humanize
+docs/humanize/
+docs/superpowers/
+
+.DS_Store
+*.swp
+*.swo
