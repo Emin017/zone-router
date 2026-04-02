@@ -1,12 +1,32 @@
 [package]
-name = "rust-playground"
+name = "api-router"
 version = "0.1.0"
 edition = "2021"
 authors = ["Emin <example@example.com>"]
-description = """
-A simple playground for rust
-"""
+description = "A lightweight HTTP proxy for routing Claude Code LLM API requests to multiple backends"
+
+[[bin]]
+name = "api-router"
+path = "src/main.rs"
 
 [dependencies]
-log = "0.4"
-pretty_env_logger = "0.5"
+axum = { version = "0.8", features = ["macros"] }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+dirs = "6"
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["full"] }
+ratatui = "0.29"
+reqwest = { version = "0.12", features = ["stream"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["macros"] }
+tempfile = "3"
+tokio-stream = "0.1"
+tower = { version = "0.5", features = ["util"] }

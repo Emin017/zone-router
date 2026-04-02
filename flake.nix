@@ -21,17 +21,16 @@
         treefmtEval = treefmt-nix.lib.evalModule pkgs {
           projectRootFile = "Cargo.toml";
           programs = {
-            nixfmt.enable = true; # nix
-            statix.enable = true; # nix static analysis
-            deadnix.enable = true; # find dead nix code
-            rustfmt.enable = true; # rust
-            yamlfmt.enable = true; # yaml
-            taplo.enable = true; # toml
+            nixfmt.enable = true;
+            statix.enable = true;
+            deadnix.enable = true;
+            rustfmt.enable = true;
+            yamlfmt.enable = true;
+            taplo.enable = true;
           };
         };
         deps = with pkgs; [
           cargo
-          # rustup
           rust-analyzer
           rustfmt
           pre-commit
@@ -41,8 +40,8 @@
       in
       {
         packages = {
-          rust-playground = pkgs.callPackage ./nix/pkgs/rust-playground.nix { };
-          default = self.packages.${system}.rust-playground;
+          api-router = pkgs.callPackage ./nix/pkgs/api-router.nix { };
+          default = self.packages.${system}.api-router;
         };
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [ pkg-config ];

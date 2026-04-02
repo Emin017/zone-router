@@ -1,0 +1,178 @@
+use crate::state::AppState;
+use crate::stats::RequestLogEntry;
+use axum::body::Body;
+use axum::extract::State;
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
+use chrono::Utc;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::RwLock;
+
+const AUTH_HEADER: &str = "x-api-key";
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+fn build_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .no_proxy()
+        .build()
+        .expect("failed to build HTTP client")
+}
+
+std::thread_local! {
+    static CLIENT: reqwest::Client = build_client();
+}
+
+pub async fn proxy_handler(
+    State(state): State<Arc<RwLock<AppState>>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let start = Instant::now();
+
+    let (local_token, backend_info) = {
+        let s = state.read().await;
+        if s.shutdown {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        let backend = s.active_backend().cloned();
+        (s.local_token.clone(), backend)
+    };
+
+    let request_token = headers
+        .get(AUTH_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if request_token != local_token {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    let backend = match backend_info {
+        Some(b) => b,
+        None => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+
+    let target_url = format!(
+        "{}{}",
+        backend.url.trim_end_matches('/'),
+        uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
+    );
+
+    let forwarded_headers: reqwest::header::HeaderMap = headers
+        .iter()
+        .filter(|(name, _)| {
+            let n = name.as_str().to_lowercase();
+            n != AUTH_HEADER && n != "host" && n != "authorization"
+        })
+        .filter_map(|(name, value)| {
+            let n = reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes()).ok()?;
+            let v = reqwest::header::HeaderValue::from_bytes(value.as_bytes()).ok()?;
+            Some((n, v))
+        })
+        .collect();
+
+    let body_bytes = match axum::body::to_bytes(body, 200 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+
+    let client = CLIENT.with(|c| c.clone());
+    let response = client
+        .request(reqwest_method(&method), &target_url)
+        .headers(forwarded_headers)
+        .header(AUTH_HEADER, &backend.token)
+        .body(body_bytes)
+        .send()
+        .await;
+
+    let backend_name = backend.name.clone();
+    let path = uri.path().to_string();
+    let method_str = method.to_string();
+
+    match response {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let is_stream = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|ct| ct.contains("text/event-stream"));
+
+            let response_headers: HeaderMap = resp
+                .headers()
+                .iter()
+                .filter_map(|(name, value)| {
+                    let n = axum::http::HeaderName::from_bytes(name.as_str().as_bytes()).ok()?;
+                    let v = HeaderValue::from_bytes(value.as_bytes()).ok()?;
+                    Some((n, v))
+                })
+                .collect();
+
+            if is_stream {
+                let state_clone = state.clone();
+                let stream = resp.bytes_stream();
+                let body = Body::from_stream(stream);
+
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    let latency = start.elapsed().as_millis() as u64;
+                    state_clone.write().await.stats.record(RequestLogEntry {
+                        timestamp: Utc::now(),
+                        backend: backend_name,
+                        method: method_str,
+                        path,
+                        status,
+                        latency_ms: latency,
+                    });
+                });
+
+                (StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY), response_headers, body).into_response()
+            } else {
+                let resp_body = resp.bytes().await.unwrap_or_default();
+                let latency = start.elapsed().as_millis() as u64;
+
+                state.write().await.stats.record(RequestLogEntry {
+                    timestamp: Utc::now(),
+                    backend: backend_name,
+                    method: method_str,
+                    path,
+                    status,
+                    latency_ms: latency,
+                });
+
+                (StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY), response_headers, resp_body).into_response()
+            }
+        }
+        Err(_) => {
+            let latency = start.elapsed().as_millis() as u64;
+            state.write().await.stats.record(RequestLogEntry {
+                timestamp: Utc::now(),
+                backend: backend_name,
+                method: method_str,
+                path,
+                status: 502,
+                latency_ms: latency,
+            });
+            StatusCode::BAD_GATEWAY.into_response()
+        }
+    }
+}
+
+fn reqwest_method(method: &Method) -> reqwest::Method {
+    match *method {
+        Method::GET => reqwest::Method::GET,
+        Method::POST => reqwest::Method::POST,
+        Method::PUT => reqwest::Method::PUT,
+        Method::DELETE => reqwest::Method::DELETE,
+        Method::PATCH => reqwest::Method::PATCH,
+        Method::HEAD => reqwest::Method::HEAD,
+        Method::OPTIONS => reqwest::Method::OPTIONS,
+        _ => reqwest::Method::GET,
+    }
+}

@@ -1,0 +1,101 @@
+use crate::state::AppState;
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::ExecutableCommand;
+use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
+use std::io::stdout;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::RwLock;
+
+use super::input::{handle_input, handle_input_mode};
+use super::ui::draw;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum InputMode {
+    Normal,
+    AddName,
+    AddUrl,
+    AddToken,
+    EditName,
+    EditUrl,
+    EditToken,
+    Search,
+    ShowToken,
+}
+
+#[derive(Debug, Clone)]
+pub struct TuiState {
+    pub cursor: usize,
+    pub mode: InputMode,
+    pub input_buffer: String,
+    pub pending_name: String,
+    pub pending_url: String,
+    pub search_query: String,
+    pub g_pressed: bool,
+    pub log_scroll: usize,
+}
+
+impl Default for TuiState {
+    fn default() -> Self {
+        Self {
+            cursor: 0,
+            mode: InputMode::Normal,
+            input_buffer: String::new(),
+            pending_name: String::new(),
+            pending_url: String::new(),
+            search_query: String::new(),
+            g_pressed: false,
+            log_scroll: 0,
+        }
+    }
+}
+
+pub fn run_tui(
+    state: Arc<RwLock<AppState>>,
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout());
+    let mut terminal = Terminal::new(backend)?;
+    let mut tui_state = TuiState::default();
+
+    let result = run_event_loop(&mut terminal, &state, &mut tui_state);
+
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+    let _ = shutdown_tx.send(true);
+    result
+}
+
+fn run_event_loop(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    state: &Arc<RwLock<AppState>>,
+    tui_state: &mut TuiState,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let rt = tokio::runtime::Handle::current();
+
+    loop {
+        let app_state = rt.block_on(state.read()).clone();
+        terminal.draw(|frame| draw(frame, &app_state, tui_state))?;
+
+        if event::poll(Duration::from_millis(33))? {
+            if let Event::Key(key) = event::read()? {
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return Ok(());
+                }
+
+                match tui_state.mode {
+                    InputMode::Normal => {
+                        if handle_input(key, tui_state, state, &rt) {
+                            return Ok(());
+                        }
+                    }
+                    _ => handle_input_mode(key, tui_state, state, &rt),
+                }
+            }
+        }
+    }
+}

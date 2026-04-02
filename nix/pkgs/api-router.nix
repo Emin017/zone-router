@@ -7,8 +7,8 @@
   ...
 }:
 rustPlatform.buildRustPackage {
-  pname = "rust-playground";
-  version = "0.1.0.0";
+  pname = "api-router";
+  version = "0.1.0";
 
   cargoLock = {
     lockFile = ./../../Cargo.lock;
