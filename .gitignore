@@ -10,6 +10,8 @@ result-*
 docs/humanize/
 docs/superpowers/
 
+.claude/settings.local.json
+
 .DS_Store
 *.swp
 *.swo
