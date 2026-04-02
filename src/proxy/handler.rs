@@ -4,8 +4,12 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
+use bytes::Bytes;
 use chrono::Utc;
+use futures_util::Stream;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Instant;
 use tokio::sync::RwLock;
 
@@ -24,6 +28,33 @@ fn build_client() -> reqwest::Client {
 
 std::thread_local! {
     static CLIENT: reqwest::Client = build_client();
+}
+
+/// A stream wrapper that sends a signal when dropped (stream fully consumed or connection closed).
+struct LogOnDropStream<S> {
+    inner: S,
+    done_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl<S> Stream for LogOnDropStream<S>
+where
+    S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
+{
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner)
+            .poll_next(cx)
+            .map(|opt| opt.map(|r| r.map_err(std::io::Error::other)))
+    }
+}
+
+impl<S> Drop for LogOnDropStream<S> {
+    fn drop(&mut self) {
+        if let Some(tx) = self.done_tx.take() {
+            let _ = tx.send(());
+        }
+    }
 }
 
 pub async fn proxy_handler(
@@ -116,11 +147,15 @@ pub async fn proxy_handler(
 
             if is_stream {
                 let state_clone = state.clone();
-                let stream = resp.bytes_stream();
-                let body = Body::from_stream(stream);
+                let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+                let wrapped = LogOnDropStream {
+                    inner: resp.bytes_stream(),
+                    done_tx: Some(done_tx),
+                };
+                let body = Body::from_stream(wrapped);
 
                 tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    let _ = done_rx.await;
                     let latency = start.elapsed().as_millis() as u64;
                     state_clone.write().await.stats.record(RequestLogEntry {
                         timestamp: Utc::now(),

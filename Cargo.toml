@@ -11,10 +11,12 @@ path = "src/main.rs"
 
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
+bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 dirs = "6"
+futures-util = "0.3"
 http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["full"] }
