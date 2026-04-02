@@ -41,8 +41,8 @@
       in
       {
         packages = {
-          api-router = pkgs.callPackage ./nix/pkgs/api-router.nix { };
-          default = self.packages.${system}.api-router;
+          zone-router = pkgs.callPackage ./nix/pkgs/zone-router.nix { };
+          default = self.packages.${system}.zone-router;
         };
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [ pkg-config ];

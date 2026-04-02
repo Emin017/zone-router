@@ -5,16 +5,16 @@ use tokio::sync::RwLock;
 pub fn make_state(
     backends: Vec<(&str, &str, &str)>,
     local_token: &str,
-) -> Arc<RwLock<api_router::state::AppState>> {
-    let config = api_router::config::Config {
-        proxy: api_router::config::ProxyConfig {
+) -> Arc<RwLock<zone_router::state::AppState>> {
+    let config = zone_router::config::Config {
+        proxy: zone_router::config::ProxyConfig {
             listen: "127.0.0.1:0".into(),
             local_token: local_token.into(),
         },
         backends: backends
             .into_iter()
             .enumerate()
-            .map(|(i, (name, url, token))| api_router::config::Backend {
+            .map(|(i, (name, url, token))| zone_router::config::Backend {
                 name: name.into(),
                 url: url.into(),
                 token: token.into(),
@@ -22,7 +22,7 @@ pub fn make_state(
             })
             .collect(),
     };
-    Arc::new(RwLock::new(api_router::state::AppState::new(
+    Arc::new(RwLock::new(zone_router::state::AppState::new(
         config,
         PathBuf::from("/tmp/test-config.toml"),
     ).unwrap()))

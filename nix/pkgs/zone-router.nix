@@ -7,7 +7,7 @@
   ...
 }:
 rustPlatform.buildRustPackage {
-  pname = "api-router";
+  pname = "zone-router";
   version = "0.1.0";
 
   cargoLock = {

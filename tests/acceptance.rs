@@ -37,7 +37,7 @@ async fn start_sse_backend() -> (String, tokio::task::JoinHandle<()>) {
 async fn sse_stream_passes_through_chunks() {
     let (backend_url, _handle) = start_sse_backend().await;
     let state = make_state(vec![("sse", &backend_url, "tok")], "secret");
-    let router = api_router::proxy::server::build_router(state);
+    let router = zone_router::proxy::server::build_router(state);
 
     let resp = router
         .oneshot(
@@ -66,7 +66,7 @@ async fn sse_stream_passes_through_chunks() {
 async fn sse_stream_logs_after_completion() {
     let (backend_url, _handle) = start_sse_backend().await;
     let state = make_state(vec![("sse-log", &backend_url, "tok")], "secret");
-    let router = api_router::proxy::server::build_router(state.clone());
+    let router = zone_router::proxy::server::build_router(state.clone());
 
     let resp = router
         .oneshot(
@@ -97,7 +97,7 @@ fn config_parse_error_on_invalid_toml() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("bad.toml");
     std::fs::write(&path, "this is not valid toml {{{").unwrap();
-    let result = api_router::config::Config::load_or_create(&path);
+    let result = zone_router::config::Config::load_or_create(&path);
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(err_msg.contains("parse"), "error should mention parse: {err_msg}");
@@ -108,7 +108,7 @@ fn config_auto_creates_default_at_custom_path() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("custom").join("nested").join("config.toml");
     assert!(!path.exists());
-    let config = api_router::config::Config::load_or_create(&path).unwrap();
+    let config = zone_router::config::Config::load_or_create(&path).unwrap();
     assert!(path.exists());
     assert_eq!(config.proxy.listen, "127.0.0.1:8080");
 }
@@ -117,12 +117,12 @@ fn config_auto_creates_default_at_custom_path() {
 fn config_custom_path_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("my-config.toml");
-    let config = api_router::config::Config {
-        proxy: api_router::config::ProxyConfig {
+    let config = zone_router::config::Config {
+        proxy: zone_router::config::ProxyConfig {
             listen: "0.0.0.0:5555".into(),
             local_token: "custom-tok".into(),
         },
-        backends: vec![api_router::config::Backend {
+        backends: vec![zone_router::config::Backend {
             name: "test".into(),
             url: "http://test".into(),
             token: "t".into(),
@@ -130,7 +130,7 @@ fn config_custom_path_roundtrip() {
         }],
     };
     config.save(&path).unwrap();
-    let loaded = api_router::config::Config::load_or_create(&path).unwrap();
+    let loaded = zone_router::config::Config::load_or_create(&path).unwrap();
     assert_eq!(loaded.proxy.listen, "0.0.0.0:5555");
     assert_eq!(loaded.proxy.local_token, "custom-tok");
     assert_eq!(loaded.backends.len(), 1);
@@ -144,16 +144,16 @@ fn env_token_stable_across_loads() {
     let path = dir.path().join("config.toml");
 
     // First load generates and persists a token
-    let state1 = api_router::state::AppState::new(
-        api_router::config::Config::load_or_create(&path).unwrap(),
+    let state1 = zone_router::state::AppState::new(
+        zone_router::config::Config::load_or_create(&path).unwrap(),
         path.clone(),
     ).unwrap();
     let token1 = state1.local_token.clone();
     assert!(token1.starts_with("sk-local-"));
 
     // Second load should reuse the persisted token
-    let state2 = api_router::state::AppState::new(
-        api_router::config::Config::load_or_create(&path).unwrap(),
+    let state2 = zone_router::state::AppState::new(
+        zone_router::config::Config::load_or_create(&path).unwrap(),
         path.clone(),
     ).unwrap();
     assert_eq!(state2.local_token, token1, "token should be stable across loads");
@@ -206,7 +206,7 @@ async fn inflight_request_completes_during_backend_switch() {
     );
 
     // Start the request (will block on barrier)
-    let router = api_router::proxy::server::build_router(state.clone());
+    let router = zone_router::proxy::server::build_router(state.clone());
     let req_handle = tokio::spawn(async move {
         router
             .oneshot(
@@ -243,7 +243,7 @@ async fn shutdown_rejects_new_requests() {
     // Set shutdown flag
     state.write().await.shutdown = true;
 
-    let router = api_router::proxy::server::build_router(state);
+    let router = zone_router::proxy::server::build_router(state);
     let resp = router
         .oneshot(
             Request::builder()
@@ -290,19 +290,19 @@ async fn shutdown_force_closes_after_timeout() {
     tokio::spawn(async move { axum::serve(backend_listener, app).await.unwrap() });
 
     let dir = tempfile::tempdir().unwrap();
-    let config = api_router::config::Config {
-        proxy: api_router::config::ProxyConfig {
+    let config = zone_router::config::Config {
+        proxy: zone_router::config::ProxyConfig {
             listen: "127.0.0.1:0".into(),
             local_token: "secret".into(),
         },
-        backends: vec![api_router::config::Backend {
+        backends: vec![zone_router::config::Backend {
             name: "hang".into(),
             url: format!("http://{backend_addr}"),
             token: "tok".into(),
             active: true,
         }],
     };
-    let app_state = api_router::state::AppState::new(config, dir.path().join("shutdown.toml")).unwrap();
+    let app_state = zone_router::state::AppState::new(config, dir.path().join("shutdown.toml")).unwrap();
     let listener = tokio::net::TcpListener::bind(&app_state.config.proxy.listen).await.unwrap();
     let proxy_addr = listener.local_addr().unwrap();
 
@@ -311,7 +311,7 @@ async fn shutdown_force_closes_after_timeout() {
 
     let server_state = state.clone();
     let mut server_handle = tokio::spawn(async move {
-        let _ = api_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await;
+        let _ = zone_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await;
     });
 
     // Send a request that will hang forever
@@ -340,7 +340,7 @@ async fn shutdown_force_closes_after_timeout() {
 
     // Call the production shutdown function — the same code path as main()
     let start = std::time::Instant::now();
-    api_router::proxy::server::force_shutdown(state, &mut server_handle).await;
+    zone_router::proxy::server::force_shutdown(state, &mut server_handle).await;
     let elapsed = start.elapsed();
 
     // The server should NOT have exited gracefully (the request hangs forever),
@@ -407,7 +407,7 @@ async fn sse_backend_disconnect_closes_client_stream() {
 
     let server_state = state.clone();
     tokio::spawn(async move {
-        let _ = api_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await;
+        let _ = zone_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await;
     });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -452,7 +452,7 @@ async fn cli_env_output_format() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_api-router"))
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_zone-router"))
         .args(["--config", path.to_str().unwrap(), "env"])
         .output()
         .await
@@ -464,7 +464,7 @@ async fn cli_env_output_format() {
     assert!(stdout.contains("export ANTHROPIC_API_KEY=sk-local-"), "should contain API_KEY export");
 
     // Run again — token should be stable
-    let output2 = tokio::process::Command::new(env!("CARGO_BIN_EXE_api-router"))
+    let output2 = tokio::process::Command::new(env!("CARGO_BIN_EXE_zone-router"))
         .args(["--config", path.to_str().unwrap(), "env"])
         .output()
         .await
@@ -484,7 +484,7 @@ async fn server_accepts_requests_on_listen_port() {
 
     let server_state = state.clone();
     tokio::spawn(async move {
-        let _ = api_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await;
+        let _ = zone_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await;
     });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -507,12 +507,12 @@ async fn port_flag_changes_listen_address() {
     let config_path = dir.path().join("config.toml");
 
     // Create a config with a backend
-    let config = api_router::config::Config {
-        proxy: api_router::config::ProxyConfig {
+    let config = zone_router::config::Config {
+        proxy: zone_router::config::ProxyConfig {
             listen: "127.0.0.1:8080".into(),
             local_token: "test-tok".into(),
         },
-        backends: vec![api_router::config::Backend {
+        backends: vec![zone_router::config::Backend {
             name: "dummy".into(),
             url: "http://127.0.0.1:1".into(),
             token: "t".into(),
@@ -526,7 +526,7 @@ async fn port_flag_changes_listen_address() {
     let port = listener.local_addr().unwrap().port();
     drop(listener); // free the port
 
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_api-router"))
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_zone-router"))
         .args(["--config", config_path.to_str().unwrap(), "--port", &port.to_string()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -574,7 +574,7 @@ async fn new_requests_route_to_new_backend_after_switch() {
     );
 
     // Request before switch goes to backend-1
-    let router = api_router::proxy::server::build_router(state.clone());
+    let router = zone_router::proxy::server::build_router(state.clone());
     let resp = router
         .oneshot(
             Request::builder()
@@ -593,7 +593,7 @@ async fn new_requests_route_to_new_backend_after_switch() {
     state.write().await.switch_backend(1);
 
     // Request after switch goes to backend-2
-    let router = api_router::proxy::server::build_router(state.clone());
+    let router = zone_router::proxy::server::build_router(state.clone());
     let resp = router
         .oneshot(
             Request::builder()
@@ -613,21 +613,21 @@ async fn new_requests_route_to_new_backend_after_switch() {
 fn backend_switch_persists_active_state() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    let config = api_router::config::Config {
-        proxy: api_router::config::ProxyConfig {
+    let config = zone_router::config::Config {
+        proxy: zone_router::config::ProxyConfig {
             listen: "127.0.0.1:0".into(),
             local_token: "tok".into(),
         },
         backends: vec![
-            api_router::config::Backend { name: "a".into(), url: "http://a".into(), token: "ta".into(), active: true },
-            api_router::config::Backend { name: "b".into(), url: "http://b".into(), token: "tb".into(), active: false },
+            zone_router::config::Backend { name: "a".into(), url: "http://a".into(), token: "ta".into(), active: true },
+            zone_router::config::Backend { name: "b".into(), url: "http://b".into(), token: "tb".into(), active: false },
         ],
     };
-    let mut state = api_router::state::AppState::new(config, path.clone()).unwrap();
+    let mut state = zone_router::state::AppState::new(config, path.clone()).unwrap();
     state.switch_backend(1);
 
     // Reload config from disk and verify active backend persisted
-    let loaded = api_router::config::Config::load_or_create(&path).unwrap();
+    let loaded = zone_router::config::Config::load_or_create(&path).unwrap();
     assert!(!loaded.backends[0].active, "first backend should not be active");
     assert!(loaded.backends[1].active, "second backend should be active after switch");
 }
@@ -636,7 +636,7 @@ fn backend_switch_persists_active_state() {
 
 #[cfg(test)]
 mod tui_tests {
-    use api_router::tui::app::{FocusPanel, InputMode, TuiState};
+    use zone_router::tui::app::{FocusPanel, InputMode, TuiState};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -645,31 +645,31 @@ mod tui_tests {
 
     fn make_tui_and_state() -> (
         TuiState,
-        std::sync::Arc<tokio::sync::RwLock<api_router::state::AppState>>,
+        std::sync::Arc<tokio::sync::RwLock<zone_router::state::AppState>>,
         tokio::runtime::Runtime,
         tempfile::TempDir,
     ) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let config = api_router::config::Config {
-            proxy: api_router::config::ProxyConfig {
+        let config = zone_router::config::Config {
+            proxy: zone_router::config::ProxyConfig {
                 listen: "127.0.0.1:0".into(),
                 local_token: "tok".into(),
             },
             backends: vec![
-                api_router::config::Backend {
+                zone_router::config::Backend {
                     name: "a".into(),
                     url: "http://a".into(),
                     token: "ta".into(),
                     active: true,
                 },
-                api_router::config::Backend {
+                zone_router::config::Backend {
                     name: "b".into(),
                     url: "http://b".into(),
                     token: "tb".into(),
                     active: false,
                 },
-                api_router::config::Backend {
+                zone_router::config::Backend {
                     name: "c".into(),
                     url: "http://c".into(),
                     token: "tc".into(),
@@ -678,7 +678,7 @@ mod tui_tests {
             ],
         };
         let state = std::sync::Arc::new(tokio::sync::RwLock::new(
-            api_router::state::AppState::new(config, dir.path().join("tui-test.toml")).unwrap(),
+            zone_router::state::AppState::new(config, dir.path().join("tui-test.toml")).unwrap(),
         ));
         (TuiState::default(), state, rt, dir)
     }
@@ -688,17 +688,17 @@ mod tui_tests {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
         assert_eq!(tui.focus, FocusPanel::Backends);
 
-        api_router::tui::input::handle_input(key(KeyCode::Tab), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Tab), &mut tui, &state, rt.handle());
         assert_eq!(tui.focus, FocusPanel::RequestLog);
 
-        api_router::tui::input::handle_input(key(KeyCode::Tab), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Tab), &mut tui, &state, rt.handle());
         assert_eq!(tui.focus, FocusPanel::Backends);
     }
 
     #[test]
     fn backtab_switches_focus() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        api_router::tui::input::handle_input(key(KeyCode::BackTab), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::BackTab), &mut tui, &state, rt.handle());
         assert_eq!(tui.focus, FocusPanel::RequestLog);
     }
 
@@ -707,24 +707,24 @@ mod tui_tests {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
         assert_eq!(tui.cursor, 0);
 
-        api_router::tui::input::handle_input(key(KeyCode::Char('j')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Char('j')), &mut tui, &state, rt.handle());
         assert_eq!(tui.cursor, 1);
 
-        api_router::tui::input::handle_input(key(KeyCode::Char('j')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Char('j')), &mut tui, &state, rt.handle());
         assert_eq!(tui.cursor, 2);
 
         // j at end stays at end
-        api_router::tui::input::handle_input(key(KeyCode::Char('j')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Char('j')), &mut tui, &state, rt.handle());
         assert_eq!(tui.cursor, 2);
 
-        api_router::tui::input::handle_input(key(KeyCode::Char('k')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Char('k')), &mut tui, &state, rt.handle());
         assert_eq!(tui.cursor, 1);
     }
 
     #[test]
     fn big_g_goes_to_end() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        api_router::tui::input::handle_input(key(KeyCode::Char('G')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Char('G')), &mut tui, &state, rt.handle());
         assert_eq!(tui.cursor, 2);
     }
 
@@ -732,8 +732,8 @@ mod tui_tests {
     fn gg_goes_to_start() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
         tui.cursor = 2;
-        api_router::tui::input::handle_input(key(KeyCode::Char('g')), &mut tui, &state, rt.handle());
-        api_router::tui::input::handle_input(key(KeyCode::Char('g')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Char('g')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Char('g')), &mut tui, &state, rt.handle());
         assert_eq!(tui.cursor, 0);
     }
 
@@ -741,7 +741,7 @@ mod tui_tests {
     fn enter_switches_active_backend() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
         tui.cursor = 1;
-        api_router::tui::input::handle_input(key(KeyCode::Enter), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Enter), &mut tui, &state, rt.handle());
         let s = rt.block_on(state.read());
         assert_eq!(s.active_index, 1);
     }
@@ -749,7 +749,7 @@ mod tui_tests {
     #[test]
     fn number_keys_switch_backend() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        api_router::tui::input::handle_input(key(KeyCode::Char('2')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Char('2')), &mut tui, &state, rt.handle());
         let s = rt.block_on(state.read());
         assert_eq!(s.active_index, 1);
         assert_eq!(tui.cursor, 1);
@@ -758,14 +758,14 @@ mod tui_tests {
     #[test]
     fn a_enters_add_mode() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        api_router::tui::input::handle_input(key(KeyCode::Char('a')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Char('a')), &mut tui, &state, rt.handle());
         assert_eq!(tui.mode, InputMode::AddName);
     }
 
     #[test]
     fn e_enters_edit_mode() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        api_router::tui::input::handle_input(key(KeyCode::Char('e')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Char('e')), &mut tui, &state, rt.handle());
         assert_eq!(tui.mode, InputMode::EditName);
     }
 
@@ -773,7 +773,7 @@ mod tui_tests {
     fn d_deletes_backend() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
         tui.cursor = 2;
-        api_router::tui::input::handle_input(key(KeyCode::Char('d')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Char('d')), &mut tui, &state, rt.handle());
         let s = rt.block_on(state.read());
         assert_eq!(s.config.backends.len(), 2);
     }
@@ -781,14 +781,14 @@ mod tui_tests {
     #[test]
     fn t_shows_token() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        api_router::tui::input::handle_input(key(KeyCode::Char('t')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Char('t')), &mut tui, &state, rt.handle());
         assert_eq!(tui.mode, InputMode::ShowToken);
     }
 
     #[test]
     fn slash_enters_search() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        api_router::tui::input::handle_input(key(KeyCode::Char('/')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(key(KeyCode::Char('/')), &mut tui, &state, rt.handle());
         assert_eq!(tui.mode, InputMode::Search);
     }
 
@@ -797,7 +797,7 @@ mod tui_tests {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
         tui.mode = InputMode::AddName;
         // 'j' in input mode should type 'j', not navigate
-        api_router::tui::input::handle_input_mode(key(KeyCode::Char('j')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input_mode(key(KeyCode::Char('j')), &mut tui, &state, rt.handle());
         assert_eq!(tui.input_buffer, "j");
         assert_eq!(tui.cursor, 0); // cursor unchanged
     }
@@ -805,7 +805,7 @@ mod tui_tests {
     #[test]
     fn q_exits_tui() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        let should_exit = api_router::tui::input::handle_input(key(KeyCode::Char('q')), &mut tui, &state, rt.handle());
+        let should_exit = zone_router::tui::input::handle_input(key(KeyCode::Char('q')), &mut tui, &state, rt.handle());
         assert!(should_exit);
     }
 }

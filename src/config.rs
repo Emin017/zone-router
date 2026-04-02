@@ -43,7 +43,7 @@ impl Default for Config {
 
 impl Config {
     pub fn default_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("api-router").join("config.toml"))
+        dirs::config_dir().map(|d| d.join("zone-router").join("config.toml"))
     }
 
     pub fn load_or_create(path: &Path) -> Result<Self, ConfigError> {

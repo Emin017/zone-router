@@ -40,7 +40,7 @@ fn draw_status_bar(frame: &mut Frame, state: &AppState, area: Rect) {
     );
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" api-router ");
+        .title(" zone-router ");
     let paragraph = Paragraph::new(text).block(block);
     frame.render_widget(paragraph, area);
 }

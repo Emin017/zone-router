@@ -29,7 +29,7 @@ async fn start_mock_backend() -> (String, tokio::task::JoinHandle<()>) {
 #[tokio::test]
 async fn unauthorized_without_token() {
     let state = make_state(vec![("test", "http://localhost:1", "tok")], "secret");
-    let router = api_router::proxy::server::build_router(state);
+    let router = zone_router::proxy::server::build_router(state);
 
     let resp = router
         .oneshot(
@@ -48,7 +48,7 @@ async fn unauthorized_without_token() {
 #[tokio::test]
 async fn unauthorized_with_wrong_token() {
     let state = make_state(vec![("test", "http://localhost:1", "tok")], "secret");
-    let router = api_router::proxy::server::build_router(state);
+    let router = zone_router::proxy::server::build_router(state);
 
     let resp = router
         .oneshot(
@@ -68,7 +68,7 @@ async fn unauthorized_with_wrong_token() {
 #[tokio::test]
 async fn service_unavailable_no_backends() {
     let state = make_state(vec![], "secret");
-    let router = api_router::proxy::server::build_router(state);
+    let router = zone_router::proxy::server::build_router(state);
 
     let resp = router
         .oneshot(
@@ -92,7 +92,7 @@ async fn forwards_to_backend_with_token_replacement() {
         vec![("mock", &backend_url, "real-backend-token")],
         "local-secret",
     );
-    let router = api_router::proxy::server::build_router(state);
+    let router = zone_router::proxy::server::build_router(state);
 
     let resp = router
         .oneshot(
@@ -122,7 +122,7 @@ async fn bad_gateway_on_unreachable_backend() {
         vec![("dead", "http://127.0.0.1:1", "tok")],
         "secret",
     );
-    let router = api_router::proxy::server::build_router(state);
+    let router = zone_router::proxy::server::build_router(state);
 
     let resp = router
         .oneshot(
@@ -159,7 +159,7 @@ async fn headers_pass_through() {
         vec![("hdr", &format!("http://{addr}"), "tok")],
         "secret",
     );
-    let router = api_router::proxy::server::build_router(state);
+    let router = zone_router::proxy::server::build_router(state);
 
     let resp = router
         .oneshot(
@@ -187,7 +187,7 @@ async fn logs_request_after_completion() {
         vec![("log-test", &backend_url, "tok")],
         "secret",
     );
-    let router = api_router::proxy::server::build_router(state.clone());
+    let router = zone_router::proxy::server::build_router(state.clone());
 
     let _resp = router
         .oneshot(
