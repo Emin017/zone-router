@@ -30,7 +30,9 @@ pub fn handle_input(
                     }
                 }
                 FocusPanel::RequestLog => {
-                    tui.log_scroll = tui.log_scroll.saturating_sub(1);
+                    if log_len > 0 {
+                        tui.log_scroll = (tui.log_scroll + 1).min(log_len.saturating_sub(1));
+                    }
                 }
             }
         }
@@ -41,9 +43,7 @@ pub fn handle_input(
                     tui.cursor = tui.cursor.saturating_sub(1);
                 }
                 FocusPanel::RequestLog => {
-                    if log_len > 0 {
-                        tui.log_scroll = (tui.log_scroll + 1).min(log_len.saturating_sub(1));
-                    }
+                    tui.log_scroll = tui.log_scroll.saturating_sub(1);
                 }
             }
         }

@@ -37,13 +37,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let config_path = resolve_config_path(cli.config);
 
-    let mut config = Config::load_or_create(&config_path)?;
+    let config = Config::load_or_create(&config_path)?;
+
+    let mut app_state = AppState::new(config, config_path);
 
     if let Some(port) = cli.port {
-        config.proxy.listen = format!("127.0.0.1:{port}");
+        app_state.config.proxy.listen = format!("127.0.0.1:{port}");
     }
-
-    let app_state = AppState::new(config, config_path);
 
     if let Some(Commands::Env) = cli.command {
         println!(
