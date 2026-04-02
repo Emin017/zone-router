@@ -161,6 +161,6 @@ fn draw_help_bar(frame: &mut Frame, tui: &TuiState, state: &AppState, area: Rect
     frame.render_widget(paragraph, area);
 }
 
-fn input_prompt<'a>(label: &str, buffer: &str) -> Line<'a> {
+fn input_prompt(label: &str, buffer: &str) -> Line<'static> {
     Line::from(format!(" {label}: {buffer}_"))
 }
