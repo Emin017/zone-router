@@ -26,13 +26,13 @@ pub fn draw(frame: &mut Frame, state: &AppState, tui: &TuiState) {
         ])
         .split(frame.area());
 
-    draw_status_bar(frame, state, tui, chunks[0]);
+    draw_status_bar(frame, state, chunks[0]);
     draw_main_area(frame, state, tui, chunks[1]);
     draw_request_log(frame, state, tui, chunks[2]);
     draw_help_bar(frame, tui, state, chunks[3]);
 }
 
-fn draw_status_bar(frame: &mut Frame, state: &AppState, _tui: &TuiState, area: Rect) {
+fn draw_status_bar(frame: &mut Frame, state: &AppState, area: Rect) {
     let token_display = state.local_token.chars().take(12).collect::<String>();
     let text = format!(
         " ● Proxy: {}  Token: {}...",
@@ -148,15 +148,19 @@ fn draw_help_bar(frame: &mut Frame, tui: &TuiState, state: &AppState, area: Rect
         InputMode::ShowToken => {
             Line::from(format!(" Token: {}  (press any key to dismiss)", state.local_token))
         }
-        InputMode::AddName => Line::from(format!(" Add backend - Name: {}_", tui.input_buffer)),
-        InputMode::AddUrl => Line::from(format!(" Add backend - URL: {}_", tui.input_buffer)),
-        InputMode::AddToken => Line::from(format!(" Add backend - Token: {}_", tui.input_buffer)),
-        InputMode::EditName => Line::from(format!(" Edit - Name: {}_", tui.input_buffer)),
-        InputMode::EditUrl => Line::from(format!(" Edit - URL: {}_", tui.input_buffer)),
-        InputMode::EditToken => Line::from(format!(" Edit - Token: {}_", tui.input_buffer)),
-        InputMode::Search => Line::from(format!(" Search: {}_", tui.input_buffer)),
+        InputMode::AddName => input_prompt("Add backend - Name", &tui.input_buffer),
+        InputMode::AddUrl => input_prompt("Add backend - URL", &tui.input_buffer),
+        InputMode::AddToken => input_prompt("Add backend - Token", &tui.input_buffer),
+        InputMode::EditName => input_prompt("Edit - Name", &tui.input_buffer),
+        InputMode::EditUrl => input_prompt("Edit - URL", &tui.input_buffer),
+        InputMode::EditToken => input_prompt("Edit - Token", &tui.input_buffer),
+        InputMode::Search => input_prompt("Search", &tui.input_buffer),
     };
     let block = Block::default().borders(Borders::ALL);
     let paragraph = Paragraph::new(content).block(block);
     frame.render_widget(paragraph, area);
+}
+
+fn input_prompt<'a>(label: &str, buffer: &str) -> Line<'a> {
+    Line::from(format!(" {label}: {buffer}_"))
 }

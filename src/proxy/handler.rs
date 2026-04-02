@@ -57,6 +57,23 @@ impl<S> Drop for LogOnDropStream<S> {
     }
 }
 
+fn make_log_entry(
+    backend: &str,
+    method: &str,
+    path: &str,
+    status: u16,
+    start: Instant,
+) -> RequestLogEntry {
+    RequestLogEntry {
+        timestamp: Utc::now(),
+        backend: backend.to_owned(),
+        method: method.to_owned(),
+        path: path.to_owned(),
+        status,
+        latency_ms: start.elapsed().as_millis() as u64,
+    }
+}
+
 pub async fn proxy_handler(
     State(state): State<Arc<RwLock<AppState>>>,
     method: Method,
@@ -156,44 +173,22 @@ pub async fn proxy_handler(
 
                 tokio::spawn(async move {
                     let _ = done_rx.await;
-                    let latency = start.elapsed().as_millis() as u64;
-                    state_clone.write().await.stats.record(RequestLogEntry {
-                        timestamp: Utc::now(),
-                        backend: backend_name,
-                        method: method_str,
-                        path,
-                        status,
-                        latency_ms: latency,
-                    });
+                    let entry = make_log_entry(&backend_name, &method_str, &path, status, start);
+                    state_clone.write().await.stats.record(entry);
                 });
 
                 (StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY), response_headers, body).into_response()
             } else {
                 let resp_body = resp.bytes().await.unwrap_or_default();
-                let latency = start.elapsed().as_millis() as u64;
-
-                state.write().await.stats.record(RequestLogEntry {
-                    timestamp: Utc::now(),
-                    backend: backend_name,
-                    method: method_str,
-                    path,
-                    status,
-                    latency_ms: latency,
-                });
+                let entry = make_log_entry(&backend_name, &method_str, &path, status, start);
+                state.write().await.stats.record(entry);
 
                 (StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY), response_headers, resp_body).into_response()
             }
         }
         Err(_) => {
-            let latency = start.elapsed().as_millis() as u64;
-            state.write().await.stats.record(RequestLogEntry {
-                timestamp: Utc::now(),
-                backend: backend_name,
-                method: method_str,
-                path,
-                status: 502,
-                latency_ms: latency,
-            });
+            let entry = make_log_entry(&backend_name, &method_str, &path, 502, start);
+            state.write().await.stats.record(entry);
             StatusCode::BAD_GATEWAY.into_response()
         }
     }

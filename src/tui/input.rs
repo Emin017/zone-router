@@ -13,66 +13,55 @@ pub fn handle_input(
     state: &Arc<RwLock<AppState>>,
     rt: &tokio::runtime::Handle,
 ) -> bool {
-    let backend_count = {
+    let (backend_count, log_len) = {
         let s = rt.block_on(state.read());
         (s.config.backends.len(), s.stats.log.len())
     };
-    let (backend_count, log_len) = backend_count;
+
+    // Reset g_pressed for all keys except 'g' (which manages it internally)
+    let was_g_pressed = tui.g_pressed;
+    tui.g_pressed = false;
 
     match key.code {
         KeyCode::Char('q') => return true,
-        KeyCode::Char('j') => {
-            tui.g_pressed = false;
-            match tui.focus {
-                FocusPanel::Backends => {
-                    if backend_count > 0 {
-                        tui.cursor = (tui.cursor + 1).min(backend_count - 1);
-                    }
-                }
-                FocusPanel::RequestLog => {
-                    if log_len > 0 {
-                        tui.log_scroll = (tui.log_scroll + 1).min(log_len.saturating_sub(1));
-                    }
+        KeyCode::Char('j') => match tui.focus {
+            FocusPanel::Backends => {
+                if backend_count > 0 {
+                    tui.cursor = (tui.cursor + 1).min(backend_count - 1);
                 }
             }
-        }
-        KeyCode::Char('k') => {
-            tui.g_pressed = false;
-            match tui.focus {
-                FocusPanel::Backends => {
-                    tui.cursor = tui.cursor.saturating_sub(1);
-                }
-                FocusPanel::RequestLog => {
-                    tui.log_scroll = tui.log_scroll.saturating_sub(1);
+            FocusPanel::RequestLog => {
+                if log_len > 0 {
+                    tui.log_scroll = (tui.log_scroll + 1).min(log_len.saturating_sub(1));
                 }
             }
-        }
+        },
+        KeyCode::Char('k') => match tui.focus {
+            FocusPanel::Backends => {
+                tui.cursor = tui.cursor.saturating_sub(1);
+            }
+            FocusPanel::RequestLog => {
+                tui.log_scroll = tui.log_scroll.saturating_sub(1);
+            }
+        },
         KeyCode::Char('G') => {
-            tui.g_pressed = false;
             if tui.focus == FocusPanel::Backends && backend_count > 0 {
                 tui.cursor = backend_count - 1;
             }
         }
         KeyCode::Char('g') => {
-            if tui.focus == FocusPanel::Backends {
-                if tui.g_pressed {
-                    tui.cursor = 0;
-                    tui.g_pressed = false;
-                } else {
-                    tui.g_pressed = true;
-                }
-            } else {
-                tui.g_pressed = false;
+            if tui.focus == FocusPanel::Backends && was_g_pressed {
+                tui.cursor = 0;
+            } else if tui.focus == FocusPanel::Backends {
+                tui.g_pressed = true;
             }
         }
         KeyCode::Enter => {
-            tui.g_pressed = false;
             if tui.focus == FocusPanel::Backends {
                 rt.block_on(state.write()).switch_backend(tui.cursor);
             }
         }
         KeyCode::Char(c @ '1'..='9') => {
-            tui.g_pressed = false;
             if tui.focus == FocusPanel::Backends {
                 let idx = (c as usize) - ('1' as usize);
                 if idx < backend_count {
@@ -82,7 +71,6 @@ pub fn handle_input(
             }
         }
         KeyCode::Char('a') => {
-            tui.g_pressed = false;
             if tui.focus == FocusPanel::Backends {
                 tui.mode = InputMode::AddName;
                 tui.input_buffer.clear();
@@ -91,7 +79,6 @@ pub fn handle_input(
             }
         }
         KeyCode::Char('d') => {
-            tui.g_pressed = false;
             if tui.focus == FocusPanel::Backends && backend_count > 0 {
                 rt.block_on(state.write()).remove_backend(tui.cursor);
                 let new_count = rt.block_on(state.read()).config.backends.len();
@@ -101,7 +88,6 @@ pub fn handle_input(
             }
         }
         KeyCode::Char('e') => {
-            tui.g_pressed = false;
             if tui.focus == FocusPanel::Backends && tui.cursor < backend_count {
                 let s = rt.block_on(state.read());
                 let b = &s.config.backends[tui.cursor];
@@ -112,22 +98,17 @@ pub fn handle_input(
             }
         }
         KeyCode::Char('t') => {
-            tui.g_pressed = false;
             tui.mode = InputMode::ShowToken;
         }
         KeyCode::Char('/') => {
-            tui.g_pressed = false;
             tui.mode = InputMode::Search;
             tui.input_buffer.clear();
             tui.search_query.clear();
         }
         KeyCode::Tab | KeyCode::BackTab => {
-            tui.g_pressed = false;
             tui.focus = tui.focus.toggle();
         }
-        _ => {
-            tui.g_pressed = false;
-        }
+        _ => {}
     }
     false
 }
