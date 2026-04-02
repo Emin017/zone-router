@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let server_state = state.clone();
-    let server_handle = tokio::spawn(async move {
+    let mut server_handle = tokio::spawn(async move {
         if let Err(e) = api_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await {
             eprintln!("Proxy server error: {e}");
         }
@@ -83,11 +83,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = tui_handle.await;
 
     state.write().await.shutdown = true;
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        server_handle,
-    )
-    .await;
+    if tokio::time::timeout(std::time::Duration::from_secs(5), &mut server_handle)
+        .await
+        .is_err()
+    {
+        server_handle.abort();
+    }
 
     Ok(())
 }
