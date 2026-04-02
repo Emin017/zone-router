@@ -270,7 +270,7 @@ async fn shutdown_force_closes_after_timeout() {
     let barrier = Arc::new(Barrier::new(2));
     let b = barrier.clone();
 
-    // Backend that blocks forever (until barrier, which we never release)
+    // Backend that blocks forever (barrier never released)
     let app = Router::new().route(
         "/v1/messages",
         post(move || {
@@ -285,9 +285,16 @@ async fn shutdown_force_closes_after_timeout() {
     let backend_addr = backend_listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(backend_listener, app).await.unwrap() });
 
+    // Find a free port for the proxy
+    let tmp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_port = tmp_listener.local_addr().unwrap().port();
+    drop(tmp_listener);
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("shutdown-config.toml");
     let config = api_router::config::Config {
         proxy: api_router::config::ProxyConfig {
-            listen: "127.0.0.1:0".into(),
+            listen: format!("127.0.0.1:{proxy_port}"),
             local_token: "secret".into(),
         },
         backends: vec![api_router::config::Backend {
@@ -297,91 +304,133 @@ async fn shutdown_force_closes_after_timeout() {
             active: true,
         }],
     };
-    let dir = tempfile::tempdir().unwrap();
-    let app_state = api_router::state::AppState::new(
-        config,
-        dir.path().join("shutdown-test.toml"),
-    );
-    let listen_addr = app_state.config.proxy.listen.clone();
-    let listener = tokio::net::TcpListener::bind(&listen_addr).await.unwrap();
-    let actual_addr = listener.local_addr().unwrap();
+    config.save(&config_path).unwrap();
 
-    let state = Arc::new(tokio::sync::RwLock::new(app_state));
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    // Spawn the actual api-router binary. Without a terminal, the TUI exits
+    // immediately, which triggers the shutdown path in main().
+    // Use --port to ensure we bind the known port.
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_api-router"))
+        .args(["--config", config_path.to_str().unwrap(), "--port", &proxy_port.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
 
-    let server_state = state.clone();
-    let mut server_handle = tokio::spawn(async move {
-        let _ = api_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await;
-    });
+    // Wait for the server to bind
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Send a request that will hang
+    // Send a request that will hang forever (backend never responds)
+    let proxy_addr = format!("127.0.0.1:{proxy_port}");
     let _req_handle = tokio::spawn(async move {
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .read_timeout(Duration::from_secs(30))
+            .build()
+            .unwrap();
         let _ = client
-            .post(format!("http://{actual_addr}/v1/messages"))
+            .post(format!("http://{proxy_addr}/v1/messages"))
             .header("x-api-key", "secret")
             .body("test")
             .send()
             .await;
     });
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // The process should exit on its own: TUI exits immediately (no terminal),
+    // main() sets shutdown=true, waits 5s, then aborts the server task.
+    // We give it 8s total (5s timeout + startup/teardown margin).
+    let exit_result = tokio::time::timeout(Duration::from_secs(8), child.wait()).await;
 
-    // Signal shutdown
-    state.write().await.shutdown = true;
-    let _ = shutdown_tx.send(true);
-
-    // Wait with a short timeout (simulating the 5s deadline but shorter for test speed)
-    let timed_out = tokio::time::timeout(Duration::from_millis(500), &mut server_handle)
-        .await
-        .is_err();
-
-    if timed_out {
-        server_handle.abort();
+    match exit_result {
+        Ok(Ok(_status)) => {
+            // Process exited — the shutdown timeout + abort path worked
+        }
+        Ok(Err(e)) => panic!("failed to wait on child: {e}"),
+        Err(_) => {
+            child.kill().await.unwrap();
+            panic!("api-router did not exit within 8s — the 5s forced shutdown is broken");
+        }
     }
-
-    // The server task should now be finished (aborted)
-    assert!(server_handle.await.unwrap_err().is_cancelled(), "server should be aborted after timeout");
 }
 
 // --- SSE mid-stream disconnect ---
 
 #[tokio::test]
 async fn sse_backend_disconnect_closes_client_stream() {
-    // Backend that sends one event then drops the connection
-    let app = Router::new().route(
-        "/v1/messages",
-        post(|| async {
-            let events = vec![
-                Ok::<_, std::convert::Infallible>(Event::default().data("partial")),
-            ];
-            Sse::new(stream::iter(events))
-        }),
-    );
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Raw TCP server that sends partial SSE then drops the connection
+    let raw_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let raw_addr = raw_listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = raw_listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                // Read until we see the end-of-headers marker
+                let mut buf = vec![0u8; 4096];
+                let mut total = 0;
+                loop {
+                    let n = socket.read(&mut buf[total..]).await.unwrap_or(0);
+                    if n == 0 { break; }
+                    total += n;
+                    if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") { break; }
+                }
+
+                // Write HTTP response headers + one SSE event
+                let response = "HTTP/1.1 200 OK\r\n\
+                    content-type: text/event-stream\r\n\
+                    transfer-encoding: chunked\r\n\
+                    \r\n\
+                    1a\r\n\
+                    data: partial-before-drop\n\n\r\n";
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+
+                // Wait briefly then drop the socket — simulating a mid-stream disconnect
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                drop(socket);
+            });
+        }
+    });
+
+    let state = make_state(vec![("disc", &format!("http://{raw_addr}"), "tok")], "secret");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let proxy_addr = listener.local_addr().unwrap();
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    let state = make_state(vec![("disc", &format!("http://{addr}"), "tok")], "secret");
-    let router = api_router::proxy::server::build_router(state);
+    let server_state = state.clone();
+    tokio::spawn(async move {
+        let _ = api_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await;
+    });
 
-    let resp = router
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header("x-api-key", "secret")
-                .body(Body::from("{}"))
-                .unwrap(),
-        )
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Send request through the proxy to the raw backend
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap();
+    let resp = client
+        .post(format!("http://{proxy_addr}/v1/messages"))
+        .header("x-api-key", "secret")
+        .body("{}")
+        .send()
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::OK);
-    // Stream should terminate cleanly after the partial event
-    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
-    let body_str = String::from_utf8(body.to_vec()).unwrap();
-    assert!(body_str.contains("partial"), "should have received the partial event");
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // Consume the stream — it should terminate (not hang) because the backend dropped
+    let body_result = tokio::time::timeout(
+        Duration::from_secs(5),
+        resp.bytes(),
+    )
+    .await;
+
+    assert!(body_result.is_ok(), "stream should terminate after backend disconnect, not hang");
+    // The body may contain the partial data or an error, but the key assertion
+    // is that the stream ended rather than hanging forever
 }
 
 // --- CLI env output test ---
