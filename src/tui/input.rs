@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use super::app::{InputMode, TuiState};
+use super::app::{FocusPanel, InputMode, TuiState};
 
 /// Returns true if the TUI should exit.
 pub fn handle_input(
@@ -13,19 +13,39 @@ pub fn handle_input(
     state: &Arc<RwLock<AppState>>,
     rt: &tokio::runtime::Handle,
 ) -> bool {
-    let backend_count = rt.block_on(state.read()).config.backends.len();
+    let backend_count = {
+        let s = rt.block_on(state.read());
+        (s.config.backends.len(), s.stats.log.len())
+    };
+    let (backend_count, log_len) = backend_count;
 
     match key.code {
         KeyCode::Char('q') => return true,
         KeyCode::Char('j') => {
             tui.g_pressed = false;
-            if backend_count > 0 {
-                tui.cursor = (tui.cursor + 1).min(backend_count - 1);
+            match tui.focus {
+                FocusPanel::Backends => {
+                    if backend_count > 0 {
+                        tui.cursor = (tui.cursor + 1).min(backend_count - 1);
+                    }
+                }
+                FocusPanel::RequestLog => {
+                    tui.log_scroll = tui.log_scroll.saturating_sub(1);
+                }
             }
         }
         KeyCode::Char('k') => {
             tui.g_pressed = false;
-            tui.cursor = tui.cursor.saturating_sub(1);
+            match tui.focus {
+                FocusPanel::Backends => {
+                    tui.cursor = tui.cursor.saturating_sub(1);
+                }
+                FocusPanel::RequestLog => {
+                    if log_len > 0 {
+                        tui.log_scroll = (tui.log_scroll + 1).min(log_len.saturating_sub(1));
+                    }
+                }
+            }
         }
         KeyCode::Char('G') => {
             tui.g_pressed = false;
@@ -91,17 +111,9 @@ pub fn handle_input(
             tui.input_buffer.clear();
             tui.search_query.clear();
         }
-        KeyCode::Tab => {
+        KeyCode::Tab | KeyCode::BackTab => {
             tui.g_pressed = false;
-            // cycle log scroll
-            let log_len = rt.block_on(state.read()).stats.log.len();
-            if log_len > 0 {
-                tui.log_scroll = (tui.log_scroll + 10).min(log_len.saturating_sub(1));
-            }
-        }
-        KeyCode::BackTab => {
-            tui.g_pressed = false;
-            tui.log_scroll = tui.log_scroll.saturating_sub(10);
+            tui.focus = tui.focus.toggle();
         }
         _ => {
             tui.g_pressed = false;

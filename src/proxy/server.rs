@@ -13,13 +13,12 @@ pub fn build_router(state: Arc<RwLock<AppState>>) -> Router {
         .with_state(state)
 }
 
-pub async fn start(
+pub async fn start_with_listener(
     state: Arc<RwLock<AppState>>,
+    listener: tokio::net::TcpListener,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let listen_addr = state.read().await.config.proxy.listen.clone();
     let router = build_router(state);
-    let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             let mut rx = shutdown_rx;

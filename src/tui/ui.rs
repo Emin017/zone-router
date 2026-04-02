@@ -5,7 +5,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 
-use super::app::{InputMode, TuiState};
+use super::app::{FocusPanel, InputMode, TuiState};
+
+fn focus_border_style(panel: &FocusPanel, current: &FocusPanel) -> Style {
+    if panel == current {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    }
+}
 
 pub fn draw(frame: &mut Frame, state: &AppState, tui: &TuiState) {
     let chunks = Layout::default()
@@ -69,7 +77,7 @@ fn draw_backend_list(frame: &mut Frame, state: &AppState, tui: &TuiState, area: 
         })
         .collect();
 
-    let block = Block::default().borders(Borders::ALL).title(" Backends ");
+    let block = Block::default().borders(Borders::ALL).title(" Backends ").border_style(focus_border_style(&FocusPanel::Backends, &tui.focus));
     let list = List::new(items).block(block);
     frame.render_widget(list, area);
 }
@@ -126,7 +134,8 @@ fn draw_request_log(frame: &mut Frame, state: &AppState, tui: &TuiState, area: R
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" Request Log ({log_len}) "));
+        .title(format!(" Request Log ({log_len}) "))
+        .border_style(focus_border_style(&FocusPanel::RequestLog, &tui.focus));
     let list = List::new(items).block(block);
     frame.render_widget(list, area);
 }

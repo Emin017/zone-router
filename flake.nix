@@ -30,6 +30,7 @@
           };
         };
         deps = with pkgs; [
+          rustc
           cargo
           rust-analyzer
           rustfmt

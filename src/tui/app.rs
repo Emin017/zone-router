@@ -25,6 +25,21 @@ pub enum InputMode {
     ShowToken,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum FocusPanel {
+    Backends,
+    RequestLog,
+}
+
+impl FocusPanel {
+    pub fn toggle(&self) -> Self {
+        match self {
+            Self::Backends => Self::RequestLog,
+            Self::RequestLog => Self::Backends,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TuiState {
     pub cursor: usize,
@@ -35,6 +50,7 @@ pub struct TuiState {
     pub search_query: String,
     pub g_pressed: bool,
     pub log_scroll: usize,
+    pub focus: FocusPanel,
 }
 
 impl Default for TuiState {
@@ -48,6 +64,7 @@ impl Default for TuiState {
             search_query: String::new(),
             g_pressed: false,
             log_scroll: 0,
+            focus: FocusPanel::Backends,
         }
     }
 }

@@ -54,14 +54,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let local_token = app_state.local_token.clone();
     let listen_addr = app_state.config.proxy.listen.clone();
+    let local_token = app_state.local_token.clone();
+
+    // Pre-bind the listener so port-in-use fails before TUI launch
+    let listener = tokio::net::TcpListener::bind(&listen_addr).await.map_err(|e| {
+        format!("Failed to bind to {listen_addr}: {e}")
+    })?;
+
     let state = Arc::new(RwLock::new(app_state));
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let server_state = state.clone();
     let server_handle = tokio::spawn(async move {
-        if let Err(e) = api_router::proxy::server::start(server_state, shutdown_rx).await {
+        if let Err(e) = api_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await {
             eprintln!("Proxy server error: {e}");
         }
     });
@@ -74,10 +80,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         api_router::tui::app::run_tui(tui_state, shutdown_tx)
     });
 
-    // Wait for TUI to exit, then shut down
     let _ = tui_handle.await;
 
-    // Mark shutdown and wait for server with timeout
     state.write().await.shutdown = true;
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(5),
