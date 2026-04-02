@@ -49,40 +49,50 @@ pub fn handle_input(
         }
         KeyCode::Char('G') => {
             tui.g_pressed = false;
-            if backend_count > 0 {
+            if tui.focus == FocusPanel::Backends && backend_count > 0 {
                 tui.cursor = backend_count - 1;
             }
         }
         KeyCode::Char('g') => {
-            if tui.g_pressed {
-                tui.cursor = 0;
-                tui.g_pressed = false;
+            if tui.focus == FocusPanel::Backends {
+                if tui.g_pressed {
+                    tui.cursor = 0;
+                    tui.g_pressed = false;
+                } else {
+                    tui.g_pressed = true;
+                }
             } else {
-                tui.g_pressed = true;
+                tui.g_pressed = false;
             }
         }
         KeyCode::Enter => {
             tui.g_pressed = false;
-            rt.block_on(state.write()).switch_backend(tui.cursor);
+            if tui.focus == FocusPanel::Backends {
+                rt.block_on(state.write()).switch_backend(tui.cursor);
+            }
         }
         KeyCode::Char(c @ '1'..='9') => {
             tui.g_pressed = false;
-            let idx = (c as usize) - ('1' as usize);
-            if idx < backend_count {
-                tui.cursor = idx;
-                rt.block_on(state.write()).switch_backend(idx);
+            if tui.focus == FocusPanel::Backends {
+                let idx = (c as usize) - ('1' as usize);
+                if idx < backend_count {
+                    tui.cursor = idx;
+                    rt.block_on(state.write()).switch_backend(idx);
+                }
             }
         }
         KeyCode::Char('a') => {
             tui.g_pressed = false;
-            tui.mode = InputMode::AddName;
-            tui.input_buffer.clear();
-            tui.pending_name.clear();
-            tui.pending_url.clear();
+            if tui.focus == FocusPanel::Backends {
+                tui.mode = InputMode::AddName;
+                tui.input_buffer.clear();
+                tui.pending_name.clear();
+                tui.pending_url.clear();
+            }
         }
         KeyCode::Char('d') => {
             tui.g_pressed = false;
-            if backend_count > 0 {
+            if tui.focus == FocusPanel::Backends && backend_count > 0 {
                 rt.block_on(state.write()).remove_backend(tui.cursor);
                 let new_count = rt.block_on(state.read()).config.backends.len();
                 if tui.cursor >= new_count && new_count > 0 {
@@ -92,7 +102,7 @@ pub fn handle_input(
         }
         KeyCode::Char('e') => {
             tui.g_pressed = false;
-            if tui.cursor < backend_count {
+            if tui.focus == FocusPanel::Backends && tui.cursor < backend_count {
                 let s = rt.block_on(state.read());
                 let b = &s.config.backends[tui.cursor];
                 tui.pending_name = b.name.clone();

@@ -147,7 +147,7 @@ fn env_token_stable_across_loads() {
     let state1 = api_router::state::AppState::new(
         api_router::config::Config::load_or_create(&path).unwrap(),
         path.clone(),
-    );
+    ).unwrap();
     let token1 = state1.local_token.clone();
     assert!(token1.starts_with("sk-local-"));
 
@@ -155,7 +155,7 @@ fn env_token_stable_across_loads() {
     let state2 = api_router::state::AppState::new(
         api_router::config::Config::load_or_create(&path).unwrap(),
         path.clone(),
-    );
+    ).unwrap();
     assert_eq!(state2.local_token, token1, "token should be stable across loads");
 }
 
@@ -302,7 +302,7 @@ async fn shutdown_force_closes_after_timeout() {
             active: true,
         }],
     };
-    let app_state = api_router::state::AppState::new(config, dir.path().join("shutdown.toml"));
+    let app_state = api_router::state::AppState::new(config, dir.path().join("shutdown.toml")).unwrap();
     let listener = tokio::net::TcpListener::bind(&app_state.config.proxy.listen).await.unwrap();
     let proxy_addr = listener.local_addr().unwrap();
 
@@ -623,7 +623,7 @@ fn backend_switch_persists_active_state() {
             api_router::config::Backend { name: "b".into(), url: "http://b".into(), token: "tb".into(), active: false },
         ],
     };
-    let mut state = api_router::state::AppState::new(config, path.clone());
+    let mut state = api_router::state::AppState::new(config, path.clone()).unwrap();
     state.switch_backend(1);
 
     // Reload config from disk and verify active backend persisted
@@ -678,7 +678,7 @@ mod tui_tests {
             ],
         };
         let state = std::sync::Arc::new(tokio::sync::RwLock::new(
-            api_router::state::AppState::new(config, dir.path().join("tui-test.toml")),
+            api_router::state::AppState::new(config, dir.path().join("tui-test.toml")).unwrap(),
         ));
         (TuiState::default(), state, rt, dir)
     }

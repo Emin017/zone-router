@@ -1,4 +1,4 @@
-use crate::config::{Backend, Config};
+use crate::config::{Backend, Config, ConfigError};
 use crate::stats::StatsCollector;
 use std::path::PathBuf;
 
@@ -13,7 +13,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(config: Config, config_path: PathBuf) -> Self {
+    pub fn new(config: Config, config_path: PathBuf) -> Result<Self, ConfigError> {
         let active_index = config.initial_active_index();
         let local_token = if config.proxy.local_token.is_empty() {
             generate_token()
@@ -30,9 +30,9 @@ impl AppState {
         };
         if state.config.proxy.local_token.is_empty() {
             state.config.proxy.local_token = local_token;
-            state.persist_config();
+            state.persist_config()?;
         }
-        state
+        Ok(state)
     }
 
     pub fn active_backend(&self) -> Option<&Backend> {
@@ -42,25 +42,25 @@ impl AppState {
     pub fn switch_backend(&mut self, index: usize) -> bool {
         if index < self.config.backends.len() && index != self.active_index {
             self.active_index = index;
-            self.persist_config();
+            let _ = self.persist_config();
             true
         } else {
             false
         }
     }
 
-    pub fn persist_config(&self) {
+    pub fn persist_config(&self) -> Result<(), ConfigError> {
         let mut config = self.config.clone();
         config.proxy.local_token = self.local_token.clone();
         config.backends.iter_mut().enumerate().for_each(|(i, b)| {
             b.active = i == self.active_index;
         });
-        let _ = config.save(&self.config_path);
+        config.save(&self.config_path)
     }
 
     pub fn add_backend(&mut self, backend: Backend) {
         self.config.backends.push(backend);
-        self.persist_config();
+        let _ = self.persist_config();
     }
 
     pub fn remove_backend(&mut self, index: usize) -> bool {
@@ -75,7 +75,7 @@ impl AppState {
         } else if index == self.active_index && self.active_index >= self.config.backends.len() {
             self.active_index = self.config.backends.len() - 1;
         }
-        self.persist_config();
+        let _ = self.persist_config();
         true
     }
 
@@ -84,7 +84,7 @@ impl AppState {
             b.name = name;
             b.url = url;
             b.token = token;
-            self.persist_config();
+            let _ = self.persist_config();
             true
         } else {
             false
@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn new_generates_token_when_empty() {
-        let state = AppState::new(test_config(), PathBuf::from("/tmp/test.toml"));
+        let state = AppState::new(test_config(), PathBuf::from("/tmp/test.toml")).unwrap();
         assert!(state.local_token.starts_with("sk-local-"));
     }
 
@@ -121,13 +121,13 @@ mod tests {
     fn new_uses_configured_token() {
         let mut config = test_config();
         config.proxy.local_token = "my-token".into();
-        let state = AppState::new(config, PathBuf::from("/tmp/test.toml"));
+        let state = AppState::new(config, PathBuf::from("/tmp/test.toml")).unwrap();
         assert_eq!(state.local_token, "my-token");
     }
 
     #[test]
     fn active_backend_returns_correct() {
-        let state = AppState::new(test_config(), PathBuf::from("/tmp/test.toml"));
+        let state = AppState::new(test_config(), PathBuf::from("/tmp/test.toml")).unwrap();
         assert_eq!(state.active_backend().unwrap().name, "a");
     }
 
@@ -135,21 +135,21 @@ mod tests {
     fn switch_backend_valid() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let mut state = AppState::new(test_config(), path);
+        let mut state = AppState::new(test_config(), path).unwrap();
         assert!(state.switch_backend(1));
         assert_eq!(state.active_index, 1);
     }
 
     #[test]
     fn switch_backend_invalid_index() {
-        let mut state = AppState::new(test_config(), PathBuf::from("/tmp/test.toml"));
+        let mut state = AppState::new(test_config(), PathBuf::from("/tmp/test.toml")).unwrap();
         assert!(!state.switch_backend(99));
         assert_eq!(state.active_index, 0);
     }
 
     #[test]
     fn switch_backend_same_index() {
-        let mut state = AppState::new(test_config(), PathBuf::from("/tmp/test.toml"));
+        let mut state = AppState::new(test_config(), PathBuf::from("/tmp/test.toml")).unwrap();
         assert!(!state.switch_backend(0));
     }
 
@@ -157,7 +157,7 @@ mod tests {
     fn remove_backend_adjusts_active() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let mut state = AppState::new(test_config(), path);
+        let mut state = AppState::new(test_config(), path).unwrap();
         state.active_index = 1;
         state.remove_backend(1);
         assert_eq!(state.active_index, 0);
@@ -169,9 +169,9 @@ mod tests {
         let path = dir.path().join("config.toml");
         let mut config = test_config();
         config.backends.push(Backend { name: "c".into(), url: "http://c".into(), token: "tc".into(), active: false });
-        let mut state = AppState::new(config, path);
-        state.active_index = 1; // active is "b"
-        state.remove_backend(0); // remove "a"
+        let mut state = AppState::new(config, path).unwrap();
+        state.active_index = 1;
+        state.remove_backend(0);
         assert_eq!(state.active_index, 0);
         assert_eq!(state.active_backend().unwrap().name, "b");
     }
@@ -182,9 +182,9 @@ mod tests {
         let path = dir.path().join("config.toml");
         let mut config = test_config();
         config.backends.push(Backend { name: "c".into(), url: "http://c".into(), token: "tc".into(), active: false });
-        let mut state = AppState::new(config, path);
-        state.active_index = 0; // active is "a"
-        state.remove_backend(2); // remove "c"
+        let mut state = AppState::new(config, path).unwrap();
+        state.active_index = 0;
+        state.remove_backend(2);
         assert_eq!(state.active_index, 0);
         assert_eq!(state.active_backend().unwrap().name, "a");
     }
@@ -193,7 +193,7 @@ mod tests {
     fn generated_token_persisted_to_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let state = AppState::new(test_config(), path.clone());
+        let state = AppState::new(test_config(), path.clone()).unwrap();
         assert!(state.local_token.starts_with("sk-local-"));
         assert_eq!(state.config.proxy.local_token, state.local_token);
         // Verify it was saved to disk

@@ -25,5 +25,5 @@ pub fn make_state(
     Arc::new(RwLock::new(api_router::state::AppState::new(
         config,
         PathBuf::from("/tmp/test-config.toml"),
-    )))
+    ).unwrap()))
 }
