@@ -1,7 +1,7 @@
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::routing::post;
-use axum::Router;
 use tower::ServiceExt;
 
 mod common;
@@ -118,10 +118,7 @@ async fn forwards_to_backend_with_token_replacement() {
 
 #[tokio::test]
 async fn bad_gateway_on_unreachable_backend() {
-    let state = make_state(
-        vec![("dead", "http://127.0.0.1:1", "tok")],
-        "secret",
-    );
+    let state = make_state(vec![("dead", "http://127.0.0.1:1", "tok")], "secret");
     let router = zone_router::proxy::server::build_router(state);
 
     let resp = router
@@ -155,10 +152,7 @@ async fn headers_pass_through() {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-    let state = make_state(
-        vec![("hdr", &format!("http://{addr}"), "tok")],
-        "secret",
-    );
+    let state = make_state(vec![("hdr", &format!("http://{addr}"), "tok")], "secret");
     let router = zone_router::proxy::server::build_router(state);
 
     let resp = router
@@ -177,16 +171,17 @@ async fn headers_pass_through() {
     let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
         .await
         .unwrap();
-    assert!(String::from_utf8(body.to_vec()).unwrap().contains("version=2024-01-01"));
+    assert!(
+        String::from_utf8(body.to_vec())
+            .unwrap()
+            .contains("version=2024-01-01")
+    );
 }
 
 #[tokio::test]
 async fn logs_request_after_completion() {
     let (backend_url, _handle) = start_mock_backend().await;
-    let state = make_state(
-        vec![("log-test", &backend_url, "tok")],
-        "secret",
-    );
+    let state = make_state(vec![("log-test", &backend_url, "tok")], "secret");
     let router = zone_router::proxy::server::build_router(state.clone());
 
     let _resp = router

@@ -1,8 +1,8 @@
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::routing::post;
-use axum::Router;
 use futures_util::stream;
 use std::sync::Arc;
 use std::time::Duration;
@@ -100,7 +100,10 @@ fn config_parse_error_on_invalid_toml() {
     let result = zone_router::config::Config::load_or_create(&path);
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
-    assert!(err_msg.contains("parse"), "error should mention parse: {err_msg}");
+    assert!(
+        err_msg.contains("parse"),
+        "error should mention parse: {err_msg}"
+    );
 }
 
 #[test]
@@ -147,7 +150,8 @@ fn env_token_stable_across_loads() {
     let state1 = zone_router::state::AppState::new(
         zone_router::config::Config::load_or_create(&path).unwrap(),
         path.clone(),
-    ).unwrap();
+    )
+    .unwrap();
     let token1 = state1.local_token.clone();
     assert!(token1.starts_with("sk-local-"));
 
@@ -155,8 +159,12 @@ fn env_token_stable_across_loads() {
     let state2 = zone_router::state::AppState::new(
         zone_router::config::Config::load_or_create(&path).unwrap(),
         path.clone(),
-    ).unwrap();
-    assert_eq!(state2.local_token, token1, "token should be stable across loads");
+    )
+    .unwrap();
+    assert_eq!(
+        state2.local_token, token1,
+        "token should be stable across loads"
+    );
 }
 
 // --- Port binding tests ---
@@ -231,7 +239,11 @@ async fn inflight_request_completes_during_backend_switch() {
     barrier.wait().await;
 
     let resp = req_handle.await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "in-flight request should complete successfully");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "in-flight request should complete successfully"
+    );
 }
 
 // --- Graceful shutdown ---
@@ -302,8 +314,11 @@ async fn shutdown_force_closes_after_timeout() {
             active: true,
         }],
     };
-    let app_state = zone_router::state::AppState::new(config, dir.path().join("shutdown.toml")).unwrap();
-    let listener = tokio::net::TcpListener::bind(&app_state.config.proxy.listen).await.unwrap();
+    let app_state =
+        zone_router::state::AppState::new(config, dir.path().join("shutdown.toml")).unwrap();
+    let listener = tokio::net::TcpListener::bind(&app_state.config.proxy.listen)
+        .await
+        .unwrap();
     let proxy_addr = listener.local_addr().unwrap();
 
     let state = Arc::new(tokio::sync::RwLock::new(app_state));
@@ -311,7 +326,9 @@ async fn shutdown_force_closes_after_timeout() {
 
     let server_state = state.clone();
     let mut server_handle = tokio::spawn(async move {
-        let _ = zone_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await;
+        let _ =
+            zone_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx)
+                .await;
     });
 
     // Send a request that will hang forever
@@ -353,10 +370,16 @@ async fn shutdown_force_closes_after_timeout() {
     // Prove the server task was actually terminated by the abort.
     // Await the handle — it should complete promptly since abort was called.
     let join_result = tokio::time::timeout(Duration::from_secs(1), server_handle).await;
-    assert!(join_result.is_ok(), "server task should complete promptly after force_shutdown abort");
+    assert!(
+        join_result.is_ok(),
+        "server task should complete promptly after force_shutdown abort"
+    );
     // The join result is Err(JoinError::Cancelled) because the task was aborted
     let task_result = join_result.unwrap();
-    assert!(task_result.unwrap_err().is_cancelled(), "server task should have been cancelled by abort");
+    assert!(
+        task_result.unwrap_err().is_cancelled(),
+        "server task should have been cancelled by abort"
+    );
 }
 
 // --- SSE mid-stream disconnect ---
@@ -378,9 +401,13 @@ async fn sse_backend_disconnect_closes_client_stream() {
         let mut total = 0;
         loop {
             let n = socket.read(&mut buf[total..]).await.unwrap_or(0);
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             total += n;
-            if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") { break; }
+            if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
         }
 
         // Valid HTTP response with chunked transfer encoding
@@ -400,14 +427,19 @@ async fn sse_backend_disconnect_closes_client_stream() {
         drop(socket);
     });
 
-    let state = make_state(vec![("disc", &format!("http://{raw_addr}"), "tok")], "secret");
+    let state = make_state(
+        vec![("disc", &format!("http://{raw_addr}"), "tok")],
+        "secret",
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = listener.local_addr().unwrap();
     let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let server_state = state.clone();
     tokio::spawn(async move {
-        let _ = zone_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await;
+        let _ =
+            zone_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx)
+                .await;
     });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -460,8 +492,14 @@ async fn cli_env_output_format() {
 
     assert!(output.status.success(), "env subcommand should succeed");
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("export ANTHROPIC_BASE_URL=http://"), "should contain BASE_URL export");
-    assert!(stdout.contains("export ANTHROPIC_API_KEY=sk-local-"), "should contain API_KEY export");
+    assert!(
+        stdout.contains("export ANTHROPIC_BASE_URL=http://"),
+        "should contain BASE_URL export"
+    );
+    assert!(
+        stdout.contains("export ANTHROPIC_API_KEY=sk-local-"),
+        "should contain API_KEY export"
+    );
 
     // Run again — token should be stable
     let output2 = tokio::process::Command::new(env!("CARGO_BIN_EXE_zone-router"))
@@ -470,7 +508,10 @@ async fn cli_env_output_format() {
         .await
         .unwrap();
     let stdout2 = String::from_utf8(output2.stdout).unwrap();
-    assert_eq!(stdout, stdout2, "env output should be stable across invocations");
+    assert_eq!(
+        stdout, stdout2,
+        "env output should be stable across invocations"
+    );
 }
 
 // --- Actual port startup and --port flag tests ---
@@ -484,7 +525,9 @@ async fn server_accepts_requests_on_listen_port() {
 
     let server_state = state.clone();
     tokio::spawn(async move {
-        let _ = zone_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await;
+        let _ =
+            zone_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx)
+                .await;
     });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -498,7 +541,11 @@ async fn server_accepts_requests_on_listen_port() {
         .unwrap();
 
     // Should get a response (not connection refused)
-    assert_ne!(resp.status().as_u16(), 0, "should receive a valid HTTP response");
+    assert_ne!(
+        resp.status().as_u16(),
+        0,
+        "should receive a valid HTTP response"
+    );
 }
 
 #[tokio::test]
@@ -527,7 +574,12 @@ async fn port_flag_changes_listen_address() {
     drop(listener); // free the port
 
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_zone-router"))
-        .args(["--config", config_path.to_str().unwrap(), "--port", &port.to_string()])
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--port",
+            &port.to_string(),
+        ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -539,7 +591,10 @@ async fn port_flag_changes_listen_address() {
 
     // Verify the port was bound by attempting a TCP connection
     let conn = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}")).await;
-    assert!(conn.is_ok(), "should be able to connect to the --port address");
+    assert!(
+        conn.is_ok(),
+        "should be able to connect to the --port address"
+    );
 
     child.kill().await.unwrap();
 }
@@ -549,18 +604,12 @@ async fn port_flag_changes_listen_address() {
 #[tokio::test]
 async fn new_requests_route_to_new_backend_after_switch() {
     // Two mock backends that identify themselves
-    let app1 = Router::new().route(
-        "/v1/messages",
-        post(|| async { "backend-1" }),
-    );
+    let app1 = Router::new().route("/v1/messages", post(|| async { "backend-1" }));
     let listener1 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr1 = listener1.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener1, app1).await.unwrap() });
 
-    let app2 = Router::new().route(
-        "/v1/messages",
-        post(|| async { "backend-2" }),
-    );
+    let app2 = Router::new().route("/v1/messages", post(|| async { "backend-2" }));
     let listener2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr2 = listener2.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener2, app2).await.unwrap() });
@@ -619,8 +668,18 @@ fn backend_switch_persists_active_state() {
             local_token: "tok".into(),
         },
         backends: vec![
-            zone_router::config::Backend { name: "a".into(), url: "http://a".into(), token: "ta".into(), active: true },
-            zone_router::config::Backend { name: "b".into(), url: "http://b".into(), token: "tb".into(), active: false },
+            zone_router::config::Backend {
+                name: "a".into(),
+                url: "http://a".into(),
+                token: "ta".into(),
+                active: true,
+            },
+            zone_router::config::Backend {
+                name: "b".into(),
+                url: "http://b".into(),
+                token: "tb".into(),
+                active: false,
+            },
         ],
     };
     let mut state = zone_router::state::AppState::new(config, path.clone()).unwrap();
@@ -628,16 +687,22 @@ fn backend_switch_persists_active_state() {
 
     // Reload config from disk and verify active backend persisted
     let loaded = zone_router::config::Config::load_or_create(&path).unwrap();
-    assert!(!loaded.backends[0].active, "first backend should not be active");
-    assert!(loaded.backends[1].active, "second backend should be active after switch");
+    assert!(
+        !loaded.backends[0].active,
+        "first backend should not be active"
+    );
+    assert!(
+        loaded.backends[1].active,
+        "second backend should be active after switch"
+    );
 }
 
 // --- TUI input tests ---
 
 #[cfg(test)]
 mod tui_tests {
-    use zone_router::tui::app::{FocusPanel, InputMode, TuiState};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use zone_router::tui::app::{FocusPanel, InputMode, TuiState};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -707,24 +772,49 @@ mod tui_tests {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
         assert_eq!(tui.cursor, 0);
 
-        zone_router::tui::input::handle_input(key(KeyCode::Char('j')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('j')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         assert_eq!(tui.cursor, 1);
 
-        zone_router::tui::input::handle_input(key(KeyCode::Char('j')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('j')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         assert_eq!(tui.cursor, 2);
 
         // j at end stays at end
-        zone_router::tui::input::handle_input(key(KeyCode::Char('j')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('j')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         assert_eq!(tui.cursor, 2);
 
-        zone_router::tui::input::handle_input(key(KeyCode::Char('k')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('k')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         assert_eq!(tui.cursor, 1);
     }
 
     #[test]
     fn big_g_goes_to_end() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        zone_router::tui::input::handle_input(key(KeyCode::Char('G')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('G')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         assert_eq!(tui.cursor, 2);
     }
 
@@ -732,8 +822,18 @@ mod tui_tests {
     fn gg_goes_to_start() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
         tui.cursor = 2;
-        zone_router::tui::input::handle_input(key(KeyCode::Char('g')), &mut tui, &state, rt.handle());
-        zone_router::tui::input::handle_input(key(KeyCode::Char('g')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('g')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('g')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         assert_eq!(tui.cursor, 0);
     }
 
@@ -749,7 +849,12 @@ mod tui_tests {
     #[test]
     fn number_keys_switch_backend() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        zone_router::tui::input::handle_input(key(KeyCode::Char('2')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('2')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         let s = rt.block_on(state.read());
         assert_eq!(s.active_index, 1);
         assert_eq!(tui.cursor, 1);
@@ -758,14 +863,24 @@ mod tui_tests {
     #[test]
     fn a_enters_add_mode() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        zone_router::tui::input::handle_input(key(KeyCode::Char('a')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('a')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         assert_eq!(tui.mode, InputMode::AddName);
     }
 
     #[test]
     fn e_enters_edit_mode() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        zone_router::tui::input::handle_input(key(KeyCode::Char('e')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('e')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         assert_eq!(tui.mode, InputMode::EditName);
     }
 
@@ -773,7 +888,12 @@ mod tui_tests {
     fn d_deletes_backend() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
         tui.cursor = 2;
-        zone_router::tui::input::handle_input(key(KeyCode::Char('d')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('d')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         let s = rt.block_on(state.read());
         assert_eq!(s.config.backends.len(), 2);
     }
@@ -781,14 +901,24 @@ mod tui_tests {
     #[test]
     fn t_shows_token() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        zone_router::tui::input::handle_input(key(KeyCode::Char('t')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('t')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         assert_eq!(tui.mode, InputMode::ShowToken);
     }
 
     #[test]
     fn slash_enters_search() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        zone_router::tui::input::handle_input(key(KeyCode::Char('/')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('/')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         assert_eq!(tui.mode, InputMode::Search);
     }
 
@@ -797,7 +927,12 @@ mod tui_tests {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
         tui.mode = InputMode::AddName;
         // 'j' in input mode should type 'j', not navigate
-        zone_router::tui::input::handle_input_mode(key(KeyCode::Char('j')), &mut tui, &state, rt.handle());
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Char('j')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         assert_eq!(tui.input_buffer, "j");
         assert_eq!(tui.cursor, 0); // cursor unchanged
     }
@@ -805,7 +940,12 @@ mod tui_tests {
     #[test]
     fn q_exits_tui() {
         let (mut tui, state, rt, _dir) = make_tui_and_state();
-        let should_exit = zone_router::tui::input::handle_input(key(KeyCode::Char('q')), &mut tui, &state, rt.handle());
+        let should_exit = zone_router::tui::input::handle_input(
+            key(KeyCode::Char('q')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         assert!(should_exit);
     }
 }

@@ -1,9 +1,9 @@
 use crate::state::AppState;
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
-use ratatui::Frame;
 
 use super::app::{FocusPanel, InputMode, TuiState};
 
@@ -19,7 +19,7 @@ pub fn draw(frame: &mut Frame, state: &AppState, tui: &TuiState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // status bar
+            Constraint::Length(3), // status bar
             Constraint::Min(6),    // main area
             Constraint::Min(8),    // request log
             Constraint::Length(3), // help / input bar
@@ -62,14 +62,20 @@ fn draw_backend_list(frame: &mut Frame, state: &AppState, tui: &TuiState, area: 
         .iter()
         .enumerate()
         .map(|(i, b)| {
-            let marker = if i == state.active_index { "✓ active" } else { "" };
+            let marker = if i == state.active_index {
+                "✓ active"
+            } else {
+                ""
+            };
             let cursor = if i == tui.cursor { "►" } else { " " };
             let line = Line::from(vec![
                 Span::raw(format!("{cursor} [{n}] {name}  ", n = i + 1, name = b.name)),
                 Span::styled(marker, Style::default().fg(Color::Green)),
             ]);
             let style = if i == tui.cursor {
-                Style::default().add_modifier(Modifier::BOLD).bg(Color::DarkGray)
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .bg(Color::DarkGray)
             } else {
                 Style::default()
             };
@@ -77,7 +83,10 @@ fn draw_backend_list(frame: &mut Frame, state: &AppState, tui: &TuiState, area: 
         })
         .collect();
 
-    let block = Block::default().borders(Borders::ALL).title(" Backends ").border_style(focus_border_style(&FocusPanel::Backends, &tui.focus));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Backends ")
+        .border_style(focus_border_style(&FocusPanel::Backends, &tui.focus));
     let list = List::new(items).block(block);
     frame.render_widget(list, area);
 }
@@ -115,7 +124,11 @@ fn draw_request_log(frame: &mut Frame, state: &AppState, tui: &TuiState, area: R
         .take(end.saturating_sub(start))
         .rev()
         .map(|entry| {
-            let status_color = if entry.status < 400 { Color::Green } else { Color::Red };
+            let status_color = if entry.status < 400 {
+                Color::Green
+            } else {
+                Color::Red
+            };
             ListItem::new(Line::from(vec![
                 Span::raw(format!(" {} ", entry.timestamp.format("%H:%M:%S"))),
                 Span::styled(
@@ -142,12 +155,13 @@ fn draw_request_log(frame: &mut Frame, state: &AppState, tui: &TuiState, area: R
 
 fn draw_help_bar(frame: &mut Frame, tui: &TuiState, state: &AppState, area: Rect) {
     let content = match &tui.mode {
-        InputMode::Normal => {
-            Line::from(" [1-9] switch  [a] add  [d] delete  [e] edit  [t] token  [/] search  [q] quit")
-        }
-        InputMode::ShowToken => {
-            Line::from(format!(" Token: {}  (press any key to dismiss)", state.local_token))
-        }
+        InputMode::Normal => Line::from(
+            " [1-9] switch  [a] add  [d] delete  [e] edit  [t] token  [/] search  [q] quit",
+        ),
+        InputMode::ShowToken => Line::from(format!(
+            " Token: {}  (press any key to dismiss)",
+            state.local_token
+        )),
         InputMode::AddName => input_prompt("Add backend - Name", &tui.input_buffer),
         InputMode::AddUrl => input_prompt("Add backend - URL", &tui.input_buffer),
         InputMode::AddToken => input_prompt("Add backend - Token", &tui.input_buffer),

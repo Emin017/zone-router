@@ -177,13 +177,23 @@ pub async fn proxy_handler(
                     state_clone.write().await.stats.record(entry);
                 });
 
-                (StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY), response_headers, body).into_response()
+                (
+                    StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+                    response_headers,
+                    body,
+                )
+                    .into_response()
             } else {
                 let resp_body = resp.bytes().await.unwrap_or_default();
                 let entry = make_log_entry(&backend_name, &method_str, &path, status, start);
                 state.write().await.stats.record(entry);
 
-                (StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY), response_headers, resp_body).into_response()
+                (
+                    StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+                    response_headers,
+                    resp_body,
+                )
+                    .into_response()
             }
         }
         Err(_) => {

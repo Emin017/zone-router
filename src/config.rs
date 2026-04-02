@@ -69,10 +69,7 @@ impl Config {
     }
 
     pub fn initial_active_index(&self) -> usize {
-        self.backends
-            .iter()
-            .position(|b| b.active)
-            .unwrap_or(0)
+        self.backends.iter().position(|b| b.active).unwrap_or(0)
     }
 }
 
@@ -153,8 +150,18 @@ active = false
                 local_token: String::new(),
             },
             backends: vec![
-                Backend { name: "a".into(), url: "http://a".into(), token: "t".into(), active: false },
-                Backend { name: "b".into(), url: "http://b".into(), token: "t".into(), active: true },
+                Backend {
+                    name: "a".into(),
+                    url: "http://a".into(),
+                    token: "t".into(),
+                    active: false,
+                },
+                Backend {
+                    name: "b".into(),
+                    url: "http://b".into(),
+                    token: "t".into(),
+                    active: true,
+                },
             ],
         };
         assert_eq!(config.initial_active_index(), 1);
@@ -180,7 +187,8 @@ active = false
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(b"[proxy]\nlisten = \"0.0.0.0:3000\"\n").unwrap();
+        f.write_all(b"[proxy]\nlisten = \"0.0.0.0:3000\"\n")
+            .unwrap();
         let config = Config::load_or_create(&path).unwrap();
         assert_eq!(config.proxy.listen, "0.0.0.0:3000");
     }
@@ -190,8 +198,16 @@ active = false
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sub").join("config.toml");
         let config = Config {
-            proxy: ProxyConfig { listen: "127.0.0.1:4000".into(), local_token: "tok".into() },
-            backends: vec![Backend { name: "x".into(), url: "http://x".into(), token: "t".into(), active: true }],
+            proxy: ProxyConfig {
+                listen: "127.0.0.1:4000".into(),
+                local_token: "tok".into(),
+            },
+            backends: vec![Backend {
+                name: "x".into(),
+                url: "http://x".into(),
+                token: "t".into(),
+                active: true,
+            }],
         };
         config.save(&path).unwrap();
         let loaded = Config::load_or_create(&path).unwrap();

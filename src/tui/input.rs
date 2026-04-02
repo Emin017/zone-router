@@ -148,16 +148,22 @@ pub fn handle_input_mode(
             }
             InputMode::EditName => {
                 tui.pending_name = tui.input_buffer.clone();
-                tui.input_buffer = rt.block_on(state.read())
-                    .config.backends.get(tui.cursor)
+                tui.input_buffer = rt
+                    .block_on(state.read())
+                    .config
+                    .backends
+                    .get(tui.cursor)
                     .map(|b| b.url.clone())
                     .unwrap_or_default();
                 tui.mode = InputMode::EditUrl;
             }
             InputMode::EditUrl => {
                 tui.pending_url = tui.input_buffer.clone();
-                tui.input_buffer = rt.block_on(state.read())
-                    .config.backends.get(tui.cursor)
+                tui.input_buffer = rt
+                    .block_on(state.read())
+                    .config
+                    .backends
+                    .get(tui.cursor)
                     .map(|b| b.token.clone())
                     .unwrap_or_default();
                 tui.mode = InputMode::EditToken;
@@ -175,8 +181,11 @@ pub fn handle_input_mode(
             InputMode::Search => {
                 tui.search_query = tui.input_buffer.clone();
                 let s = rt.block_on(state.read());
-                let found = s.config.backends.iter()
-                    .position(|b| b.name.to_lowercase().contains(&tui.search_query.to_lowercase()));
+                let found = s.config.backends.iter().position(|b| {
+                    b.name
+                        .to_lowercase()
+                        .contains(&tui.search_query.to_lowercase())
+                });
                 if let Some(idx) = found {
                     tui.cursor = idx;
                 }

@@ -22,8 +22,7 @@ pub fn make_state(
             })
             .collect(),
     };
-    Arc::new(RwLock::new(zone_router::state::AppState::new(
-        config,
-        PathBuf::from("/tmp/test-config.toml"),
-    ).unwrap()))
+    Arc::new(RwLock::new(
+        zone_router::state::AppState::new(config, PathBuf::from("/tmp/test-config.toml")).unwrap(),
+    ))
 }

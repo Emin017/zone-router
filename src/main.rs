@@ -1,12 +1,15 @@
 use clap::{Parser, Subcommand};
-use zone_router::config::Config;
-use zone_router::state::AppState;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use zone_router::config::Config;
+use zone_router::state::AppState;
 
 #[derive(Parser)]
-#[command(name = "zone-router", about = "LLM API router with TUI for Claude Code")]
+#[command(
+    name = "zone-router",
+    about = "LLM API router with TUI for Claude Code"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -58,16 +61,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let local_token = app_state.local_token.clone();
 
     // Pre-bind the listener so port-in-use fails before TUI launch
-    let listener = tokio::net::TcpListener::bind(&listen_addr).await.map_err(|e| {
-        format!("Failed to bind to {listen_addr}: {e}")
-    })?;
+    let listener = tokio::net::TcpListener::bind(&listen_addr)
+        .await
+        .map_err(|e| format!("Failed to bind to {listen_addr}: {e}"))?;
 
     let state = Arc::new(RwLock::new(app_state));
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let server_state = state.clone();
     let mut server_handle = tokio::spawn(async move {
-        if let Err(e) = zone_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await {
+        if let Err(e) =
+            zone_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx)
+                .await
+        {
             eprintln!("Proxy server error: {e}");
         }
     });
@@ -76,9 +82,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Local token: {local_token}");
 
     let tui_state = state.clone();
-    let tui_handle = tokio::task::spawn_blocking(move || {
-        zone_router::tui::app::run_tui(tui_state, shutdown_tx)
-    });
+    let tui_handle =
+        tokio::task::spawn_blocking(move || zone_router::tui::app::run_tui(tui_state, shutdown_tx));
 
     let _ = tui_handle.await;
 

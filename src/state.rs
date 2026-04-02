@@ -79,7 +79,13 @@ impl AppState {
         true
     }
 
-    pub fn update_backend(&mut self, index: usize, name: String, url: String, token: String) -> bool {
+    pub fn update_backend(
+        &mut self,
+        index: usize,
+        name: String,
+        url: String,
+        token: String,
+    ) -> bool {
         if let Some(b) = self.config.backends.get_mut(index) {
             b.name = name;
             b.url = url;
@@ -103,10 +109,23 @@ mod tests {
 
     fn test_config() -> Config {
         Config {
-            proxy: ProxyConfig { listen: "127.0.0.1:8080".into(), local_token: String::new() },
+            proxy: ProxyConfig {
+                listen: "127.0.0.1:8080".into(),
+                local_token: String::new(),
+            },
             backends: vec![
-                Backend { name: "a".into(), url: "http://a".into(), token: "ta".into(), active: true },
-                Backend { name: "b".into(), url: "http://b".into(), token: "tb".into(), active: false },
+                Backend {
+                    name: "a".into(),
+                    url: "http://a".into(),
+                    token: "ta".into(),
+                    active: true,
+                },
+                Backend {
+                    name: "b".into(),
+                    url: "http://b".into(),
+                    token: "tb".into(),
+                    active: false,
+                },
             ],
         }
     }
@@ -168,7 +187,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let mut config = test_config();
-        config.backends.push(Backend { name: "c".into(), url: "http://c".into(), token: "tc".into(), active: false });
+        config.backends.push(Backend {
+            name: "c".into(),
+            url: "http://c".into(),
+            token: "tc".into(),
+            active: false,
+        });
         let mut state = AppState::new(config, path).unwrap();
         state.active_index = 1;
         state.remove_backend(0);
@@ -181,7 +205,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let mut config = test_config();
-        config.backends.push(Backend { name: "c".into(), url: "http://c".into(), token: "tc".into(), active: false });
+        config.backends.push(Backend {
+            name: "c".into(),
+            url: "http://c".into(),
+            token: "tc".into(),
+            active: false,
+        });
         let mut state = AppState::new(config, path).unwrap();
         state.active_index = 0;
         state.remove_backend(2);
