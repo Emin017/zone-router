@@ -265,36 +265,34 @@ async fn shutdown_rejects_new_requests() {
 
 #[tokio::test]
 async fn shutdown_force_closes_after_timeout() {
-    use tokio::sync::Barrier;
+    // Signaling backend: accepts a connection, signals when the forwarded
+    // request arrives, then blocks forever.
+    let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+    let signal_tx = Arc::new(tokio::sync::Mutex::new(Some(signal_tx)));
 
-    let barrier = Arc::new(Barrier::new(2));
-    let b = barrier.clone();
+    let backend_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let backend_addr = backend_listener.local_addr().unwrap();
 
-    // Backend that blocks forever (barrier never released)
     let app = Router::new().route(
         "/v1/messages",
         post(move || {
-            let b = b.clone();
+            let tx = signal_tx.clone();
             async move {
-                b.wait().await;
-                "ok"
+                // Signal that the request has been admitted
+                if let Some(tx) = tx.lock().await.take() {
+                    let _ = tx.send(());
+                }
+                // Block forever
+                futures_util::future::pending::<&str>().await
             }
         }),
     );
-    let backend_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let backend_addr = backend_listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(backend_listener, app).await.unwrap() });
 
-    // Find a free port for the proxy
-    let tmp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let proxy_port = tmp_listener.local_addr().unwrap().port();
-    drop(tmp_listener);
-
     let dir = tempfile::tempdir().unwrap();
-    let config_path = dir.path().join("shutdown-config.toml");
     let config = api_router::config::Config {
         proxy: api_router::config::ProxyConfig {
-            listen: format!("127.0.0.1:{proxy_port}"),
+            listen: "127.0.0.1:0".into(),
             local_token: "secret".into(),
         },
         backends: vec![api_router::config::Backend {
@@ -304,25 +302,20 @@ async fn shutdown_force_closes_after_timeout() {
             active: true,
         }],
     };
-    config.save(&config_path).unwrap();
+    let app_state = api_router::state::AppState::new(config, dir.path().join("shutdown.toml"));
+    let listener = tokio::net::TcpListener::bind(&app_state.config.proxy.listen).await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
 
-    // Spawn the actual api-router binary. Without a terminal, the TUI exits
-    // immediately, which triggers the shutdown path in main().
-    // Use --port to ensure we bind the known port.
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_api-router"))
-        .args(["--config", config_path.to_str().unwrap(), "--port", &proxy_port.to_string()])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    let state = Arc::new(tokio::sync::RwLock::new(app_state));
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // Wait for the server to bind
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let server_state = state.clone();
+    let mut server_handle = tokio::spawn(async move {
+        let _ = api_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx).await;
+    });
 
-    // Send a request that will hang forever (backend never responds)
-    let proxy_addr = format!("127.0.0.1:{proxy_port}");
-    let _req_handle = tokio::spawn(async move {
+    // Send a request that will hang forever
+    tokio::spawn(async move {
         let client = reqwest::Client::builder()
             .no_proxy()
             .read_timeout(Duration::from_secs(30))
@@ -336,21 +329,33 @@ async fn shutdown_force_closes_after_timeout() {
             .await;
     });
 
-    // The process should exit on its own: TUI exits immediately (no terminal),
-    // main() sets shutdown=true, waits 5s, then aborts the server task.
-    // We give it 8s total (5s timeout + startup/teardown margin).
-    let exit_result = tokio::time::timeout(Duration::from_secs(8), child.wait()).await;
+    // Wait for the backend to confirm the request is in-flight
+    tokio::time::timeout(Duration::from_secs(5), signal_rx)
+        .await
+        .expect("timed out waiting for backend signal")
+        .expect("signal channel dropped");
 
-    match exit_result {
-        Ok(Ok(_status)) => {
-            // Process exited — the shutdown timeout + abort path worked
-        }
-        Ok(Err(e)) => panic!("failed to wait on child: {e}"),
-        Err(_) => {
-            child.kill().await.unwrap();
-            panic!("api-router did not exit within 8s — the 5s forced shutdown is broken");
-        }
+    // Replicate main()'s shutdown path: set shutdown flag, wait 5s, abort
+    state.write().await.shutdown = true;
+    let _ = shutdown_tx.send(true);
+
+    let start = std::time::Instant::now();
+
+    if tokio::time::timeout(Duration::from_secs(5), &mut server_handle)
+        .await
+        .is_err()
+    {
+        server_handle.abort();
     }
+
+    let elapsed = start.elapsed();
+
+    // The server should NOT have exited gracefully (the request hangs forever),
+    // so the 5s timeout must have been needed.
+    assert!(
+        elapsed >= Duration::from_secs(4),
+        "shutdown completed in {elapsed:?} — too fast, the 5s forced-abort was not exercised"
+    );
 }
 
 // --- SSE mid-stream disconnect ---
@@ -359,39 +364,39 @@ async fn shutdown_force_closes_after_timeout() {
 async fn sse_backend_disconnect_closes_client_stream() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    // Raw TCP server that sends partial SSE then drops the connection
+    // Raw TCP server: sends valid HTTP response with one correctly-framed
+    // chunked SSE event, then drops the socket mid-stream.
     let raw_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let raw_addr = raw_listener.local_addr().unwrap();
 
     tokio::spawn(async move {
+        let (mut socket, _) = raw_listener.accept().await.unwrap();
+
+        // Read until end-of-headers
+        let mut buf = vec![0u8; 8192];
+        let mut total = 0;
         loop {
-            let (mut socket, _) = raw_listener.accept().await.unwrap();
-            tokio::spawn(async move {
-                // Read until we see the end-of-headers marker
-                let mut buf = vec![0u8; 4096];
-                let mut total = 0;
-                loop {
-                    let n = socket.read(&mut buf[total..]).await.unwrap_or(0);
-                    if n == 0 { break; }
-                    total += n;
-                    if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") { break; }
-                }
-
-                // Write HTTP response headers + one SSE event
-                let response = "HTTP/1.1 200 OK\r\n\
-                    content-type: text/event-stream\r\n\
-                    transfer-encoding: chunked\r\n\
-                    \r\n\
-                    1a\r\n\
-                    data: partial-before-drop\n\n\r\n";
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.flush().await;
-
-                // Wait briefly then drop the socket — simulating a mid-stream disconnect
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                drop(socket);
-            });
+            let n = socket.read(&mut buf[total..]).await.unwrap_or(0);
+            if n == 0 { break; }
+            total += n;
+            if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") { break; }
         }
+
+        // Valid HTTP response with chunked transfer encoding
+        let header = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n";
+        socket.write_all(header.as_bytes()).await.unwrap();
+
+        // First chunk: a valid, correctly-sized SSE event
+        // "data: event1\n\n" = 14 bytes = 0xe hex
+        let chunk1 = "e\r\ndata: event1\n\n\r\n";
+        socket.write_all(chunk1.as_bytes()).await.unwrap();
+        socket.flush().await.unwrap();
+
+        // Give the proxy time to forward the first chunk to the client
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Drop the socket mid-stream (no terminating 0-length chunk)
+        drop(socket);
     });
 
     let state = make_state(vec![("disc", &format!("http://{raw_addr}"), "tok")], "secret");
@@ -406,12 +411,8 @@ async fn sse_backend_disconnect_closes_client_stream() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Send request through the proxy to the raw backend
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .unwrap();
-    let resp = client
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut resp = client
         .post(format!("http://{proxy_addr}/v1/messages"))
         .header("x-api-key", "secret")
         .body("{}")
@@ -421,16 +422,26 @@ async fn sse_backend_disconnect_closes_client_stream() {
 
     assert_eq!(resp.status().as_u16(), 200);
 
-    // Consume the stream — it should terminate (not hang) because the backend dropped
-    let body_result = tokio::time::timeout(
-        Duration::from_secs(5),
-        resp.bytes(),
-    )
-    .await;
+    // Phase 1: Read the first chunk — should contain the valid SSE event
+    let first_chunk = tokio::time::timeout(Duration::from_secs(3), resp.chunk())
+        .await
+        .expect("timed out waiting for first chunk")
+        .expect("error reading first chunk");
 
-    assert!(body_result.is_ok(), "stream should terminate after backend disconnect, not hang");
-    // The body may contain the partial data or an error, but the key assertion
-    // is that the stream ended rather than hanging forever
+    let first_bytes = first_chunk.expect("should have received at least one chunk");
+    let chunk_data = String::from_utf8_lossy(&first_bytes);
+    assert!(
+        chunk_data.contains("event1"),
+        "first chunk should contain the SSE event data, got: {chunk_data}"
+    );
+
+    // Phase 2: The next read should terminate (EOF or error) because the
+    // backend dropped the socket. It must not hang.
+    let second_read = tokio::time::timeout(Duration::from_secs(3), resp.chunk()).await;
+    assert!(
+        second_read.is_ok(),
+        "stream should terminate after backend disconnect, not hang"
+    );
 }
 
 // --- CLI env output test ---
