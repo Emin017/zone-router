@@ -67,9 +67,18 @@ fn draw_backend_list(frame: &mut Frame, state: &AppState, tui: &TuiState, area: 
             } else {
                 ""
             };
+            let model_marker = if b.model_map.as_ref().is_some_and(|m| m.has_any()) {
+                " [M]"
+            } else {
+                ""
+            };
             let cursor = if i == tui.cursor { "►" } else { " " };
             let line = Line::from(vec![
-                Span::raw(format!("{cursor} [{n}] {name}  ", n = i + 1, name = b.name)),
+                Span::raw(format!(
+                    "{cursor} [{n}] {name}{model_marker}  ",
+                    n = i + 1,
+                    name = b.name
+                )),
                 Span::styled(marker, Style::default().fg(Color::Green)),
             ]);
             let style = if i == tui.cursor {
@@ -169,12 +178,20 @@ fn draw_help_bar(frame: &mut Frame, tui: &TuiState, state: &AppState, area: Rect
             "Add backend - Auth type (1=api-key, 2=bearer)",
             &tui.input_buffer,
         ),
+        InputMode::AddModelMap => input_prompt(
+            "Model map (e.g. haiku=x,sonnet=y,opus=z) or Enter to skip",
+            &tui.input_buffer,
+        ),
         InputMode::EditName => input_prompt("Edit - Name", &tui.input_buffer),
         InputMode::EditUrl => input_prompt("Edit - URL", &tui.input_buffer),
         InputMode::EditToken => input_prompt("Edit - Token", &tui.input_buffer),
         InputMode::EditAuthType => {
             input_prompt("Edit - Auth type (1=api-key, 2=bearer)", &tui.input_buffer)
         }
+        InputMode::EditModelMap => input_prompt(
+            "Edit - Model map (e.g. haiku=x,sonnet=y,opus=z) or Enter to clear",
+            &tui.input_buffer,
+        ),
         InputMode::Search => input_prompt("Search", &tui.input_buffer),
     };
     let block = Block::default().borders(Borders::ALL);

@@ -1,4 +1,4 @@
-use crate::config::{AuthType, Backend};
+use crate::config::{AuthType, Backend, ModelMap};
 use crate::state::AppState;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::Arc;
@@ -155,16 +155,28 @@ pub fn handle_input_mode(
                     tui.auth_type_rejected = true;
                     return;
                 };
+                tui.pending_auth_type = Some(auth_type);
+                tui.input_buffer.clear();
+                tui.auth_type_rejected = false;
+                tui.mode = InputMode::AddModelMap;
+            }
+            InputMode::AddModelMap => {
+                let model_map = parse_model_map_input(&tui.input_buffer);
+                if model_map.is_none() && !tui.input_buffer.trim().is_empty() {
+                    tui.input_buffer.clear();
+                    return;
+                }
                 let backend = Backend {
                     name: tui.pending_name.clone(),
                     url: tui.pending_url.clone(),
                     token: tui.pending_token.clone(),
                     active: false,
-                    auth_type,
+                    auth_type: tui.pending_auth_type.unwrap_or_default(),
+                    model_map,
                 };
                 rt.block_on(state.write()).add_backend(backend);
                 tui.input_buffer.clear();
-                tui.auth_type_rejected = false;
+                tui.pending_auth_type = None;
                 tui.mode = InputMode::Normal;
             }
             InputMode::EditName => {
@@ -213,12 +225,30 @@ pub fn handle_input_mode(
                     tui.auth_type_rejected = true;
                     return;
                 };
+                tui.pending_auth_type = Some(auth_type);
+                tui.auth_type_rejected = false;
+                tui.input_buffer = format_model_map(
+                    rt.block_on(state.read())
+                        .config
+                        .backends
+                        .get(tui.cursor)
+                        .and_then(|b| b.model_map.as_ref()),
+                );
+                tui.mode = InputMode::EditModelMap;
+            }
+            InputMode::EditModelMap => {
+                let model_map = parse_model_map_input(&tui.input_buffer);
+                if model_map.is_none() && !tui.input_buffer.trim().is_empty() {
+                    tui.input_buffer.clear();
+                    return;
+                }
                 rt.block_on(state.write()).update_backend(
                     tui.cursor,
                     tui.pending_name.clone(),
                     tui.pending_url.clone(),
                     tui.pending_token.clone(),
-                    auth_type,
+                    tui.pending_auth_type.unwrap_or_default(),
+                    model_map,
                 );
                 tui.input_buffer.clear();
                 tui.auth_type_rejected = false;
@@ -255,4 +285,46 @@ pub fn handle_input_mode(
         }
         _ => {}
     }
+}
+
+/// Parse comma-separated `key=value` pairs into a `ModelMap`.
+/// Valid keys: haiku, sonnet, opus. Returns `None` on invalid input.
+pub fn parse_model_map_input(input: &str) -> Option<ModelMap> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut mm = ModelMap::default();
+    for pair in trimmed.split(',') {
+        let pair = pair.trim();
+        let (key, value) = pair.split_once('=')?;
+        let key = key.trim();
+        let value = value.trim();
+        if value.is_empty() {
+            return None;
+        }
+        match key {
+            "haiku" => mm.haiku = Some(value.to_string()),
+            "sonnet" => mm.sonnet = Some(value.to_string()),
+            "opus" => mm.opus = Some(value.to_string()),
+            _ => return None,
+        }
+    }
+    if mm.has_any() { Some(mm) } else { None }
+}
+
+/// Format a `ModelMap` as a comma-separated `key=value` string for pre-filling input.
+pub fn format_model_map(mm: Option<&ModelMap>) -> String {
+    let Some(mm) = mm else {
+        return String::new();
+    };
+    [
+        ("haiku", &mm.haiku),
+        ("sonnet", &mm.sonnet),
+        ("opus", &mm.opus),
+    ]
+    .into_iter()
+    .filter_map(|(key, val)| val.as_deref().map(|v| format!("{key}={v}")))
+    .collect::<Vec<_>>()
+    .join(",")
 }

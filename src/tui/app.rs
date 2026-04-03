@@ -21,10 +21,12 @@ pub enum InputMode {
     AddUrl,
     AddToken,
     AddAuthType,
+    AddModelMap,
     EditName,
     EditUrl,
     EditToken,
     EditAuthType,
+    EditModelMap,
     Search,
     ShowToken,
 }

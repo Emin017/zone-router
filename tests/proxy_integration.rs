@@ -478,6 +478,7 @@ fn make_state_with_auth_type(
             token: token.into(),
             active: true,
             auth_type,
+            model_map: None,
         }],
     };
     std::sync::Arc::new(tokio::sync::RwLock::new(
@@ -563,4 +564,252 @@ async fn outbound_bearer_auth_type() {
         body_str.contains("x-api-key=none"),
         "should NOT send x-api-key header, got: {body_str}"
     );
+}
+
+// --- Model map rewriting tests ---
+
+async fn start_body_echo_backend() -> (String, tokio::task::JoinHandle<()>) {
+    let app = Router::new().route("/v1/messages", post(|body: String| async move { body }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), handle)
+}
+
+fn make_state_with_model_map(
+    name: &str,
+    url: &str,
+    token: &str,
+    local_token: &str,
+    model_map: Option<zone_router::config::ModelMap>,
+) -> std::sync::Arc<tokio::sync::RwLock<zone_router::state::AppState>> {
+    let config = zone_router::config::Config {
+        proxy: zone_router::config::ProxyConfig {
+            listen: "127.0.0.1:0".into(),
+            local_token: local_token.into(),
+        },
+        backends: vec![zone_router::config::Backend {
+            name: name.into(),
+            url: url.into(),
+            token: token.into(),
+            active: true,
+            auth_type: zone_router::config::AuthType::default(),
+            model_map,
+        }],
+    };
+    std::sync::Arc::new(tokio::sync::RwLock::new(
+        zone_router::state::AppState::new(
+            config,
+            std::path::PathBuf::from("/tmp/test-model-map.toml"),
+        )
+        .unwrap(),
+    ))
+}
+
+#[tokio::test]
+async fn model_map_rewrites_sonnet() {
+    let (backend_url, _handle) = start_body_echo_backend().await;
+    let mm = zone_router::config::ModelMap {
+        haiku: None,
+        sonnet: Some("glm-5-turbo".into()),
+        opus: None,
+    };
+    let state = make_state_with_model_map("mm", &backend_url, "tok", "secret", Some(mm));
+    let router = zone_router::proxy::server::build_router(state);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"claude-sonnet-4-20250514","messages":[]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["model"], "glm-5-turbo");
+    assert_eq!(v["messages"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn no_model_map_passes_body_unchanged() {
+    let (backend_url, _handle) = start_body_echo_backend().await;
+    let state = make_state_with_model_map("plain", &backend_url, "tok", "secret", None);
+    let router = zone_router::proxy::server::build_router(state);
+
+    let original = r#"{"model":"claude-sonnet-4-20250514","messages":[]}"#;
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .header("content-type", "application/json")
+                .body(Body::from(original))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(body.as_ref(), original.as_bytes());
+}
+
+#[tokio::test]
+async fn model_map_no_tier_match_passes_through() {
+    let (backend_url, _handle) = start_body_echo_backend().await;
+    let mm = zone_router::config::ModelMap {
+        haiku: Some("h".into()),
+        sonnet: Some("s".into()),
+        opus: Some("o".into()),
+    };
+    let state = make_state_with_model_map("mm", &backend_url, "tok", "secret", Some(mm));
+    let router = zone_router::proxy::server::build_router(state);
+
+    let original = r#"{"model":"gpt-4o","messages":[]}"#;
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .header("content-type", "application/json")
+                .body(Body::from(original))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["model"], "gpt-4o");
+}
+
+#[tokio::test]
+async fn partial_model_map_only_rewrites_matching_tier() {
+    let (backend_url, _handle) = start_body_echo_backend().await;
+    let mm = zone_router::config::ModelMap {
+        haiku: None,
+        sonnet: Some("glm-5-turbo".into()),
+        opus: None,
+    };
+    let state = make_state_with_model_map("mm", &backend_url, "tok", "secret", Some(mm));
+
+    // Sonnet should be rewritten
+    let router = zone_router::proxy::server::build_router(state.clone());
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"claude-sonnet-4-20250514"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["model"], "glm-5-turbo");
+
+    // Opus should pass through (not mapped)
+    let router = zone_router::proxy::server::build_router(state);
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"claude-opus-4-6"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["model"], "claude-opus-4-6");
+}
+
+#[tokio::test]
+async fn non_json_body_passes_through() {
+    let (backend_url, _handle) = start_body_echo_backend().await;
+    let mm = zone_router::config::ModelMap {
+        haiku: Some("h".into()),
+        sonnet: Some("s".into()),
+        opus: Some("o".into()),
+    };
+    let state = make_state_with_model_map("mm", &backend_url, "tok", "secret", Some(mm));
+    let router = zone_router::proxy::server::build_router(state);
+
+    let original = "this is not json";
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .body(Body::from(original))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(body.as_ref(), original.as_bytes());
+}
+
+#[tokio::test]
+async fn json_without_model_field_passes_through() {
+    let (backend_url, _handle) = start_body_echo_backend().await;
+    let mm = zone_router::config::ModelMap {
+        haiku: Some("h".into()),
+        sonnet: Some("s".into()),
+        opus: Some("o".into()),
+    };
+    let state = make_state_with_model_map("mm", &backend_url, "tok", "secret", Some(mm));
+    let router = zone_router::proxy::server::build_router(state);
+
+    let original = r#"{"messages":[]}"#;
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .header("content-type", "application/json")
+                .body(Body::from(original))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["messages"], serde_json::json!([]));
 }

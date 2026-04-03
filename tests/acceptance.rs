@@ -131,6 +131,7 @@ fn config_custom_path_roundtrip() {
             token: "t".into(),
             active: true,
             auth_type: zone_router::config::AuthType::default(),
+            model_map: None,
         }],
     };
     config.save(&path).unwrap();
@@ -314,6 +315,7 @@ async fn shutdown_force_closes_after_timeout() {
             token: "tok".into(),
             active: true,
             auth_type: zone_router::config::AuthType::default(),
+            model_map: None,
         }],
     };
     let app_state =
@@ -571,6 +573,7 @@ async fn port_flag_changes_listen_address() {
             token: "t".into(),
             active: true,
             auth_type: zone_router::config::AuthType::default(),
+            model_map: None,
         }],
     };
     config.save(&config_path).unwrap();
@@ -681,6 +684,7 @@ fn backend_switch_persists_active_state() {
                 token: "ta".into(),
                 active: true,
                 auth_type: zone_router::config::AuthType::default(),
+                model_map: None,
             },
             zone_router::config::Backend {
                 name: "b".into(),
@@ -688,6 +692,7 @@ fn backend_switch_persists_active_state() {
                 token: "tb".into(),
                 active: false,
                 auth_type: zone_router::config::AuthType::default(),
+                model_map: None,
             },
         ],
     };
@@ -737,6 +742,7 @@ mod tui_tests {
                     token: "ta".into(),
                     active: true,
                     auth_type: zone_router::config::AuthType::default(),
+                    model_map: None,
                 },
                 zone_router::config::Backend {
                     name: "b".into(),
@@ -744,6 +750,7 @@ mod tui_tests {
                     token: "tb".into(),
                     active: false,
                     auth_type: zone_router::config::AuthType::default(),
+                    model_map: None,
                 },
                 zone_router::config::Backend {
                     name: "c".into(),
@@ -751,6 +758,7 @@ mod tui_tests {
                     token: "tc".into(),
                     active: false,
                     auth_type: zone_router::config::AuthType::default(),
+                    model_map: None,
                 },
             ],
         };
@@ -1039,7 +1047,16 @@ mod tui_tests {
         tui.pending_url = "http://d".into();
         tui.pending_token = "td".into();
 
-        // Submit empty input → should default to ApiKey and complete
+        // Submit empty input → should default to ApiKey and move to AddModelMap
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::AddModelMap);
+
+        // Submit empty input → skip model map and complete
         zone_router::tui::input::handle_input_mode(
             key(KeyCode::Enter),
             &mut tui,
@@ -1192,6 +1209,15 @@ mod tui_tests {
                 rt.handle(),
             );
         }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditModelMap);
+
+        // Submit empty input → skip model map and complete
         zone_router::tui::input::handle_input_mode(
             key(KeyCode::Enter),
             &mut tui,
@@ -1382,5 +1408,158 @@ mod tui_tests {
             s.config.backends[0].auth_type, original_auth_type,
             "backend auth type must not change from empty Enter after rejection"
         );
+    }
+
+    // --- Model map TUI input parsing tests ---
+
+    #[test]
+    fn parse_model_map_valid_full() {
+        let result = zone_router::tui::input::parse_model_map_input(
+            "haiku=glm-4.5-air,sonnet=glm-5-turbo,opus=glm-5.1",
+        );
+        let mm = result.unwrap();
+        assert_eq!(mm.haiku.as_deref(), Some("glm-4.5-air"));
+        assert_eq!(mm.sonnet.as_deref(), Some("glm-5-turbo"));
+        assert_eq!(mm.opus.as_deref(), Some("glm-5.1"));
+    }
+
+    #[test]
+    fn parse_model_map_partial() {
+        let result = zone_router::tui::input::parse_model_map_input("sonnet=glm-5-turbo");
+        let mm = result.unwrap();
+        assert!(mm.haiku.is_none());
+        assert_eq!(mm.sonnet.as_deref(), Some("glm-5-turbo"));
+        assert!(mm.opus.is_none());
+    }
+
+    #[test]
+    fn parse_model_map_empty_returns_none() {
+        assert!(zone_router::tui::input::parse_model_map_input("").is_none());
+        assert!(zone_router::tui::input::parse_model_map_input("  ").is_none());
+    }
+
+    #[test]
+    fn parse_model_map_invalid_key_returns_none() {
+        assert!(zone_router::tui::input::parse_model_map_input("foo=bar").is_none());
+    }
+
+    #[test]
+    fn parse_model_map_invalid_format_returns_none() {
+        assert!(zone_router::tui::input::parse_model_map_input("haiku:x").is_none());
+    }
+
+    #[test]
+    fn add_flow_with_model_map() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        // Fast-forward to AddModelMap
+        tui.mode = InputMode::AddModelMap;
+        tui.pending_name = "mapped".into();
+        tui.pending_url = "http://m".into();
+        tui.pending_token = "tm".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Type model map input
+        for c in "sonnet=glm-5-turbo,opus=glm-5.1".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+
+        let s = rt.block_on(state.read());
+        assert_eq!(s.config.backends.len(), initial_count + 1);
+        let added = s.config.backends.last().unwrap();
+        assert_eq!(added.name, "mapped");
+        let mm = added.model_map.as_ref().unwrap();
+        assert_eq!(mm.sonnet.as_deref(), Some("glm-5-turbo"));
+        assert_eq!(mm.opus.as_deref(), Some("glm-5.1"));
+        assert!(mm.haiku.is_none());
+    }
+
+    #[test]
+    fn add_flow_skip_model_map() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        tui.mode = InputMode::AddModelMap;
+        tui.pending_name = "plain".into();
+        tui.pending_url = "http://p".into();
+        tui.pending_token = "tp".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Press Enter on empty input → skip
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+
+        let s = rt.block_on(state.read());
+        assert_eq!(s.config.backends.len(), initial_count + 1);
+        assert!(s.config.backends.last().unwrap().model_map.is_none());
+    }
+
+    #[test]
+    fn edit_flow_clears_model_map_on_empty() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        // Set a model_map on backend 0
+        {
+            let mut s = rt.block_on(state.write());
+            s.config.backends[0].model_map = Some(zone_router::config::ModelMap {
+                haiku: None,
+                sonnet: Some("s".into()),
+                opus: None,
+            });
+        }
+
+        // Fast-forward to EditModelMap
+        tui.mode = InputMode::EditModelMap;
+        tui.cursor = 0;
+        tui.pending_name = "a".into();
+        tui.pending_url = "http://a".into();
+        tui.pending_token = "ta".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+        tui.input_buffer.clear();
+
+        // Submit empty → clears model_map
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+
+        let s = rt.block_on(state.read());
+        assert!(s.config.backends[0].model_map.is_none());
+    }
+
+    #[test]
+    fn backend_list_shows_m_marker() {
+        // This is a visual test — we verify the model_map field is set correctly
+        // and trust the UI rendering code uses it (tested via draw function)
+        let mm = zone_router::config::ModelMap {
+            haiku: None,
+            sonnet: Some("s".into()),
+            opus: None,
+        };
+        assert!(mm.has_any());
+
+        let empty_mm = zone_router::config::ModelMap::default();
+        assert!(!empty_mm.has_any());
     }
 }

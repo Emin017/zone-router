@@ -1,4 +1,4 @@
-use crate::config::AuthType;
+use crate::config::{AuthType, ModelMap};
 use crate::state::AppState;
 use crate::stats::RequestLogEntry;
 use axum::body::Body;
@@ -75,6 +75,20 @@ fn make_log_entry(
     }
 }
 
+fn rewrite_model(body: Bytes, mm: &ModelMap) -> Bytes {
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return body;
+    };
+    let Some(model_str) = value.get("model").and_then(|v| v.as_str()) else {
+        return body;
+    };
+    let Some(replacement) = mm.resolve(model_str) else {
+        return body;
+    };
+    value["model"] = serde_json::Value::String(replacement.to_owned());
+    serde_json::to_vec(&value).map(Bytes::from).unwrap_or(body)
+}
+
 pub async fn proxy_handler(
     State(state): State<Arc<RwLock<AppState>>>,
     method: Method,
@@ -140,6 +154,11 @@ pub async fn proxy_handler(
     let body_bytes = match axum::body::to_bytes(body, 200 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+
+    let body_bytes = match backend.model_map {
+        Some(ref mm) if mm.has_any() => rewrite_model(body_bytes, mm),
+        _ => body_bytes,
     };
 
     let client = CLIENT.with(|c| c.clone());
