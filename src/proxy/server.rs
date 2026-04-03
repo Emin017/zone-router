@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tower::{MakeService, ServiceExt};
+use tower::{Service, ServiceExt};
 
 const BODY_LIMIT: usize = 200 * 1024 * 1024; // 200MB
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -21,12 +21,22 @@ pub fn build_router(state: Arc<RwLock<AppState>>) -> Router {
         .with_state(state)
 }
 
+/// Resolves when the watch channel signals `true` (shutdown requested).
+/// If the sender is dropped, parks forever so callers don't spin.
+async fn wait_for_shutdown(rx: &mut tokio::sync::watch::Receiver<bool>) {
+    while !*rx.borrow() {
+        if rx.changed().await.is_err() {
+            futures_util::future::pending::<()>().await;
+        }
+    }
+}
+
 struct TowerToHyperService<S>(S);
 
 impl<S> hyper::service::Service<hyper::Request<hyper::body::Incoming>> for TowerToHyperService<S>
 where
     S: tower::Service<axum::http::Request<axum::body::Body>> + Clone + Send + 'static,
-    S::Response: axum::response::IntoResponse,
+    S::Response: IntoResponse,
     S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     S::Future: Send + 'static,
 {
@@ -37,12 +47,11 @@ where
     fn call(&self, req: hyper::Request<hyper::body::Incoming>) -> Self::Future {
         let mut svc = self.0.clone();
         Box::pin(async move {
-            let req = req.map(axum::body::Body::new);
             let resp = svc
                 .ready()
                 .await
                 .map_err(Into::into)?
-                .call(req)
+                .call(req.map(axum::body::Body::new))
                 .await
                 .map_err(Into::into)?;
             Ok(resp.into_response())
@@ -55,25 +64,13 @@ pub async fn start_with_listener(
     listener: tokio::net::TcpListener,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let router = build_router(state);
-    let mut make_svc = router.into_make_service();
+    let mut make_svc = build_router(state).into_make_service();
     // JoinSet aborts all tasks on drop, so if force_shutdown aborts this
     // task, all child connection tasks are also terminated.
     let mut conns = tokio::task::JoinSet::new();
 
-    let mut accept_shutdown_rx = shutdown_rx.clone();
-    let shutdown = async {
-        loop {
-            if *accept_shutdown_rx.borrow() {
-                break;
-            }
-            match accept_shutdown_rx.changed().await {
-                Ok(()) => {}
-                Err(_) => futures_util::future::pending::<()>().await,
-            }
-        }
-    };
-    tokio::pin!(shutdown);
+    let mut accept_rx = shutdown_rx.clone();
+    tokio::pin!(let shutdown = wait_for_shutdown(&mut accept_rx););
 
     loop {
         let stream = tokio::select! {
@@ -89,38 +86,26 @@ pub async fn start_with_listener(
             },
         };
 
-        let svc = MakeService::<(), hyper::Request<hyper::body::Incoming>>::make_service(
-            &mut make_svc,
-            (),
-        )
-        .await
-        .map_err(|e| format!("make_service error: {e:?}"))?;
+        let svc = Service::<()>::call(&mut make_svc, ())
+            .await
+            .map_err(|e| format!("make_service error: {e:?}"))?;
 
-        let mut conn_shutdown_rx = shutdown_rx.clone();
         // Reap completed connection tasks to avoid unbounded memory growth.
         while conns.try_join_next().is_some() {}
-        conns.spawn(async move {
-            let io = TokioIo::new(stream);
-            let builder = auto::Builder::new(TokioExecutor::new());
-            let mut conn = Box::pin(builder.serve_connection(io, TowerToHyperService(svc)));
 
-            // Poll the connection, but also watch for the shutdown signal.
-            // On shutdown, call graceful_shutdown so the connection finishes
-            // its current request and then closes.
+        let mut conn_rx = shutdown_rx.clone();
+        conns.spawn(async move {
+            let builder = auto::Builder::new(TokioExecutor::new());
+            let mut conn =
+                Box::pin(builder.serve_connection(TokioIo::new(stream), TowerToHyperService(svc)));
+
             tokio::select! {
                 result = &mut conn => {
                     if let Err(e) = result {
                         eprintln!("connection error: {e}");
                     }
                 }
-                () = async {
-                    loop {
-                        if *conn_shutdown_rx.borrow() { break; }
-                        if conn_shutdown_rx.changed().await.is_err() {
-                            futures_util::future::pending::<()>().await;
-                        }
-                    }
-                } => {
+                () = wait_for_shutdown(&mut conn_rx) => {
                     conn.as_mut().graceful_shutdown();
                     if let Err(e) = conn.await {
                         eprintln!("connection error: {e}");
