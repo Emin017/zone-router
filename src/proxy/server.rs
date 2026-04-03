@@ -2,8 +2,8 @@ use crate::state::AppState;
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::response::IntoResponse;
-use hyper::server::conn::http1;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -94,11 +94,9 @@ pub async fn start_with_listener(
 
         conn_handles.push(tokio::spawn(async move {
             let io = TokioIo::new(stream);
-            if let Err(e) = http1::Builder::new()
-                .keep_alive(false)
-                .serve_connection(io, TowerToHyperService(svc))
-                .await
-            {
+            let mut builder = auto::Builder::new(TokioExecutor::new());
+            builder.http1().keep_alive(false);
+            if let Err(e) = builder.serve_connection(io, TowerToHyperService(svc)).await {
                 eprintln!("connection error: {e}");
             }
         }));
