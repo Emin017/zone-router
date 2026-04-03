@@ -187,28 +187,38 @@ pub fn handle_input_mode(
             }
             InputMode::EditToken => {
                 tui.pending_token = tui.input_buffer.clone();
+                tui.pending_auth_type = rt
+                    .block_on(state.read())
+                    .config
+                    .backends
+                    .get(tui.cursor)
+                    .map(|b| b.auth_type);
                 tui.input_buffer.clear();
                 tui.mode = InputMode::EditAuthType;
             }
             InputMode::EditAuthType => {
-                let parsed = AuthType::from_input(&tui.input_buffer);
-                if let Some(auth_type) = parsed
-                    .filter(|_| !tui.input_buffer.trim().is_empty() || !tui.auth_type_rejected)
+                let auth_type = if tui.input_buffer.trim().is_empty() && !tui.auth_type_rejected {
+                    tui.pending_auth_type.unwrap_or_default()
+                } else if let Some(at) = AuthType::from_input(&tui.input_buffer)
+                    .filter(|_| !tui.input_buffer.trim().is_empty())
                 {
-                    rt.block_on(state.write()).update_backend(
-                        tui.cursor,
-                        tui.pending_name.clone(),
-                        tui.pending_url.clone(),
-                        tui.pending_token.clone(),
-                        auth_type,
-                    );
-                    tui.input_buffer.clear();
-                    tui.auth_type_rejected = false;
-                    tui.mode = InputMode::Normal;
+                    at
                 } else {
                     tui.input_buffer.clear();
                     tui.auth_type_rejected = true;
-                }
+                    return;
+                };
+                rt.block_on(state.write()).update_backend(
+                    tui.cursor,
+                    tui.pending_name.clone(),
+                    tui.pending_url.clone(),
+                    tui.pending_token.clone(),
+                    auth_type,
+                );
+                tui.input_buffer.clear();
+                tui.auth_type_rejected = false;
+                tui.pending_auth_type = None;
+                tui.mode = InputMode::Normal;
             }
             InputMode::Search => {
                 tui.search_query = tui.input_buffer.clone();

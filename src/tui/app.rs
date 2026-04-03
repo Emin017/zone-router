@@ -57,6 +57,7 @@ pub struct TuiState {
     pub log_scroll: usize,
     pub focus: FocusPanel,
     pub auth_type_rejected: bool,
+    pub pending_auth_type: Option<crate::config::AuthType>,
 }
 
 impl Default for TuiState {
@@ -73,6 +74,7 @@ impl Default for TuiState {
             log_scroll: 0,
             focus: FocusPanel::Backends,
             auth_type_rejected: false,
+            pending_auth_type: None,
         }
     }
 }
