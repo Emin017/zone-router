@@ -1,4 +1,4 @@
-use crate::config::Backend;
+use crate::config::{AuthType, Backend};
 use crate::state::AppState;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::Arc;
@@ -76,6 +76,7 @@ pub fn handle_input(
                 tui.input_buffer.clear();
                 tui.pending_name.clear();
                 tui.pending_url.clear();
+                tui.pending_token.clear();
             }
         }
         KeyCode::Char('d') => {
@@ -136,11 +137,18 @@ pub fn handle_input_mode(
                 tui.mode = InputMode::AddToken;
             }
             InputMode::AddToken => {
+                tui.pending_token = tui.input_buffer.clone();
+                tui.input_buffer.clear();
+                tui.mode = InputMode::AddAuthType;
+            }
+            InputMode::AddAuthType => {
+                let auth_type = AuthType::from_input(&tui.input_buffer);
                 let backend = Backend {
                     name: tui.pending_name.clone(),
                     url: tui.pending_url.clone(),
-                    token: tui.input_buffer.clone(),
+                    token: tui.pending_token.clone(),
                     active: false,
+                    auth_type,
                 };
                 rt.block_on(state.write()).add_backend(backend);
                 tui.input_buffer.clear();
@@ -169,11 +177,25 @@ pub fn handle_input_mode(
                 tui.mode = InputMode::EditToken;
             }
             InputMode::EditToken => {
+                tui.pending_token = tui.input_buffer.clone();
+                let current_auth_type = rt
+                    .block_on(state.read())
+                    .config
+                    .backends
+                    .get(tui.cursor)
+                    .map(|b| b.auth_type.clone())
+                    .unwrap_or_default();
+                tui.input_buffer = current_auth_type.to_string();
+                tui.mode = InputMode::EditAuthType;
+            }
+            InputMode::EditAuthType => {
+                let auth_type = AuthType::from_input(&tui.input_buffer);
                 rt.block_on(state.write()).update_backend(
                     tui.cursor,
                     tui.pending_name.clone(),
                     tui.pending_url.clone(),
-                    tui.input_buffer.clone(),
+                    tui.pending_token.clone(),
+                    auth_type,
                 );
                 tui.input_buffer.clear();
                 tui.mode = InputMode::Normal;

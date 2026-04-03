@@ -165,9 +165,16 @@ fn draw_help_bar(frame: &mut Frame, tui: &TuiState, state: &AppState, area: Rect
         InputMode::AddName => input_prompt("Add backend - Name", &tui.input_buffer),
         InputMode::AddUrl => input_prompt("Add backend - URL", &tui.input_buffer),
         InputMode::AddToken => input_prompt("Add backend - Token", &tui.input_buffer),
+        InputMode::AddAuthType => input_prompt(
+            "Add backend - Auth type (1=api-key, 2=bearer)",
+            &tui.input_buffer,
+        ),
         InputMode::EditName => input_prompt("Edit - Name", &tui.input_buffer),
         InputMode::EditUrl => input_prompt("Edit - URL", &tui.input_buffer),
         InputMode::EditToken => input_prompt("Edit - Token", &tui.input_buffer),
+        InputMode::EditAuthType => {
+            input_prompt("Edit - Auth type (1=api-key, 2=bearer)", &tui.input_buffer)
+        }
         InputMode::Search => input_prompt("Search", &tui.input_buffer),
     };
     let block = Block::default().borders(Borders::ALL);

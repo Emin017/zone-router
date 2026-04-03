@@ -1,5 +1,33 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub enum AuthType {
+    #[default]
+    #[serde(rename = "api-key")]
+    ApiKey,
+    #[serde(rename = "bearer")]
+    Bearer,
+}
+
+impl fmt::Display for AuthType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ApiKey => write!(f, "api-key"),
+            Self::Bearer => write!(f, "bearer"),
+        }
+    }
+}
+
+impl AuthType {
+    pub fn from_input(s: &str) -> Self {
+        match s.trim() {
+            "2" | "bearer" => Self::Bearer,
+            _ => Self::ApiKey,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -23,6 +51,8 @@ pub struct Backend {
     pub token: String,
     #[serde(default)]
     pub active: bool,
+    #[serde(default)]
+    pub auth_type: AuthType,
 }
 
 fn default_listen() -> String {
@@ -97,6 +127,16 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    fn backend(name: &str, url: &str, token: &str, active: bool) -> Backend {
+        Backend {
+            name: name.into(),
+            url: url.into(),
+            token: token.into(),
+            active,
+            auth_type: AuthType::default(),
+        }
+    }
+
     #[test]
     fn parse_valid_config() {
         let toml_str = r#"
@@ -150,18 +190,8 @@ active = false
                 local_token: String::new(),
             },
             backends: vec![
-                Backend {
-                    name: "a".into(),
-                    url: "http://a".into(),
-                    token: "t".into(),
-                    active: false,
-                },
-                Backend {
-                    name: "b".into(),
-                    url: "http://b".into(),
-                    token: "t".into(),
-                    active: true,
-                },
+                backend("a", "http://a", "t", false),
+                backend("b", "http://b", "t", true),
             ],
         };
         assert_eq!(config.initial_active_index(), 1);
@@ -202,16 +232,92 @@ active = false
                 listen: "127.0.0.1:4000".into(),
                 local_token: "tok".into(),
             },
-            backends: vec![Backend {
-                name: "x".into(),
-                url: "http://x".into(),
-                token: "t".into(),
-                active: true,
-            }],
+            backends: vec![backend("x", "http://x", "t", true)],
         };
         config.save(&path).unwrap();
         let loaded = Config::load_or_create(&path).unwrap();
         assert_eq!(loaded.proxy.listen, "127.0.0.1:4000");
         assert_eq!(loaded.backends.len(), 1);
+    }
+
+    #[test]
+    fn auth_type_defaults_to_api_key() {
+        let toml_str = r#"
+[proxy]
+listen = "127.0.0.1:8080"
+
+[[backends]]
+name = "test"
+url = "http://test"
+token = "tok"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.backends[0].auth_type, AuthType::ApiKey);
+    }
+
+    #[test]
+    fn auth_type_bearer_parses() {
+        let toml_str = r#"
+[proxy]
+
+[[backends]]
+name = "test"
+url = "http://test"
+token = "tok"
+auth_type = "bearer"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.backends[0].auth_type, AuthType::Bearer);
+    }
+
+    #[test]
+    fn auth_type_api_key_parses() {
+        let toml_str = r#"
+[proxy]
+
+[[backends]]
+name = "test"
+url = "http://test"
+token = "tok"
+auth_type = "api-key"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.backends[0].auth_type, AuthType::ApiKey);
+    }
+
+    #[test]
+    fn auth_type_invalid_fails() {
+        let toml_str = r#"
+[proxy]
+
+[[backends]]
+name = "test"
+url = "http://test"
+token = "tok"
+auth_type = "invalid"
+"#;
+        assert!(toml::from_str::<Config>(toml_str).is_err());
+    }
+
+    #[test]
+    fn auth_type_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let config = Config {
+            proxy: ProxyConfig {
+                listen: "127.0.0.1:4000".into(),
+                local_token: "tok".into(),
+            },
+            backends: vec![Backend {
+                name: "b".into(),
+                url: "http://b".into(),
+                token: "t".into(),
+                active: false,
+                auth_type: AuthType::Bearer,
+            }],
+        };
+        config.save(&path).unwrap();
+        let loaded = Config::load_or_create(&path).unwrap();
+        assert_eq!(loaded.backends[0].auth_type, AuthType::Bearer);
     }
 }

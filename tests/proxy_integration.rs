@@ -204,3 +204,242 @@ async fn logs_request_after_completion() {
     assert_eq!(s.stats.log[0].backend, "log-test");
     assert_eq!(s.stats.log[0].status, 200);
 }
+
+// --- Bearer inbound auth tests ---
+
+#[tokio::test]
+async fn bearer_auth_accepted() {
+    let (backend_url, _handle) = start_mock_backend().await;
+    let state = make_state(vec![("mock", &backend_url, "tok")], "local-secret");
+    let router = zone_router::proxy::server::build_router(state);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("authorization", "Bearer local-secret")
+                .body(Body::from("test"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn bearer_auth_wrong_token_rejected() {
+    let state = make_state(vec![("test", "http://localhost:1", "tok")], "secret");
+    let router = zone_router::proxy::server::build_router(state);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("authorization", "Bearer wrong-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn basic_auth_rejected() {
+    let state = make_state(vec![("test", "http://localhost:1", "tok")], "secret");
+    let router = zone_router::proxy::server::build_router(state);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("authorization", "Basic secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn x_api_key_takes_precedence_over_bearer() {
+    let (backend_url, _handle) = start_mock_backend().await;
+    let state = make_state(vec![("mock", &backend_url, "tok")], "secret");
+    let router = zone_router::proxy::server::build_router(state);
+
+    // Valid x-api-key + invalid Bearer → should succeed (x-api-key wins)
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .header("authorization", "Bearer wrong")
+                .body(Body::from("test"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn invalid_x_api_key_with_valid_bearer_rejected() {
+    let state = make_state(vec![("test", "http://localhost:1", "tok")], "secret");
+    let router = zone_router::proxy::server::build_router(state);
+
+    // Invalid x-api-key + valid Bearer → should fail (x-api-key takes precedence)
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "wrong")
+                .header("authorization", "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+// --- Outbound auth type tests ---
+
+/// Mock backend that echoes both x-api-key and authorization headers.
+async fn start_auth_echo_backend() -> (String, tokio::task::JoinHandle<()>) {
+    let app = Router::new().route(
+        "/v1/messages",
+        post(|headers: axum::http::HeaderMap| async move {
+            let api_key = headers
+                .get("x-api-key")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("none");
+            let auth = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("none");
+            format!("x-api-key={api_key},authorization={auth}")
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), handle)
+}
+
+fn make_state_with_auth_type(
+    name: &str,
+    url: &str,
+    token: &str,
+    local_token: &str,
+    auth_type: zone_router::config::AuthType,
+) -> std::sync::Arc<tokio::sync::RwLock<zone_router::state::AppState>> {
+    let config = zone_router::config::Config {
+        proxy: zone_router::config::ProxyConfig {
+            listen: "127.0.0.1:0".into(),
+            local_token: local_token.into(),
+        },
+        backends: vec![zone_router::config::Backend {
+            name: name.into(),
+            url: url.into(),
+            token: token.into(),
+            active: true,
+            auth_type,
+        }],
+    };
+    std::sync::Arc::new(tokio::sync::RwLock::new(
+        zone_router::state::AppState::new(
+            config,
+            std::path::PathBuf::from("/tmp/test-auth-type.toml"),
+        )
+        .unwrap(),
+    ))
+}
+
+#[tokio::test]
+async fn outbound_api_key_auth_type() {
+    let (backend_url, _handle) = start_auth_echo_backend().await;
+    let state = make_state_with_auth_type(
+        "test",
+        &backend_url,
+        "real-token",
+        "secret",
+        zone_router::config::AuthType::ApiKey,
+    );
+    let router = zone_router::proxy::server::build_router(state);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        body_str.contains("x-api-key=real-token"),
+        "should send x-api-key header, got: {body_str}"
+    );
+    assert!(
+        body_str.contains("authorization=none"),
+        "should NOT send authorization header, got: {body_str}"
+    );
+}
+
+#[tokio::test]
+async fn outbound_bearer_auth_type() {
+    let (backend_url, _handle) = start_auth_echo_backend().await;
+    let state = make_state_with_auth_type(
+        "test",
+        &backend_url,
+        "real-token",
+        "secret",
+        zone_router::config::AuthType::Bearer,
+    );
+    let router = zone_router::proxy::server::build_router(state);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        body_str.contains("authorization=Bearer real-token"),
+        "should send Authorization: Bearer header, got: {body_str}"
+    );
+    assert!(
+        body_str.contains("x-api-key=none"),
+        "should NOT send x-api-key header, got: {body_str}"
+    );
+}

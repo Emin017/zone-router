@@ -19,6 +19,7 @@ pub fn make_state(
                 url: url.into(),
                 token: token.into(),
                 active: i == 0,
+                auth_type: zone_router::config::AuthType::default(),
             })
             .collect(),
     };

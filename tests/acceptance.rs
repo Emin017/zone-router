@@ -130,6 +130,7 @@ fn config_custom_path_roundtrip() {
             url: "http://test".into(),
             token: "t".into(),
             active: true,
+            auth_type: zone_router::config::AuthType::default(),
         }],
     };
     config.save(&path).unwrap();
@@ -312,6 +313,7 @@ async fn shutdown_force_closes_after_timeout() {
             url: format!("http://{backend_addr}"),
             token: "tok".into(),
             active: true,
+            auth_type: zone_router::config::AuthType::default(),
         }],
     };
     let app_state =
@@ -500,6 +502,10 @@ async fn cli_env_output_format() {
         stdout.contains("export ANTHROPIC_API_KEY=sk-local-"),
         "should contain API_KEY export"
     );
+    assert!(
+        stdout.contains("export ANTHROPIC_AUTH_TOKEN=sk-local-"),
+        "should contain AUTH_TOKEN export"
+    );
 
     // Run again — token should be stable
     let output2 = tokio::process::Command::new(env!("CARGO_BIN_EXE_zone-router"))
@@ -564,6 +570,7 @@ async fn port_flag_changes_listen_address() {
             url: "http://127.0.0.1:1".into(),
             token: "t".into(),
             active: true,
+            auth_type: zone_router::config::AuthType::default(),
         }],
     };
     config.save(&config_path).unwrap();
@@ -673,12 +680,14 @@ fn backend_switch_persists_active_state() {
                 url: "http://a".into(),
                 token: "ta".into(),
                 active: true,
+                auth_type: zone_router::config::AuthType::default(),
             },
             zone_router::config::Backend {
                 name: "b".into(),
                 url: "http://b".into(),
                 token: "tb".into(),
                 active: false,
+                auth_type: zone_router::config::AuthType::default(),
             },
         ],
     };
@@ -727,18 +736,21 @@ mod tui_tests {
                     url: "http://a".into(),
                     token: "ta".into(),
                     active: true,
+                    auth_type: zone_router::config::AuthType::default(),
                 },
                 zone_router::config::Backend {
                     name: "b".into(),
                     url: "http://b".into(),
                     token: "tb".into(),
                     active: false,
+                    auth_type: zone_router::config::AuthType::default(),
                 },
                 zone_router::config::Backend {
                     name: "c".into(),
                     url: "http://c".into(),
                     token: "tc".into(),
                     active: false,
+                    auth_type: zone_router::config::AuthType::default(),
                 },
             ],
         };

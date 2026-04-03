@@ -1,3 +1,4 @@
+use crate::config::AuthType;
 use crate::state::AppState;
 use crate::stats::RequestLogEntry;
 use axum::body::Body;
@@ -95,6 +96,12 @@ pub async fn proxy_handler(
     let request_token = headers
         .get(AUTH_HEADER)
         .and_then(|v| v.to_str().ok())
+        .or_else(|| {
+            headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+        })
         .unwrap_or("");
 
     if request_token != local_token {
@@ -131,10 +138,14 @@ pub async fn proxy_handler(
     };
 
     let client = CLIENT.with(|c| c.clone());
+    let auth_header = match backend.auth_type {
+        AuthType::ApiKey => (AUTH_HEADER, backend.token.clone()),
+        AuthType::Bearer => ("authorization", format!("Bearer {}", backend.token)),
+    };
     let response = client
         .request(reqwest_method(&method), &target_url)
         .headers(forwarded_headers)
-        .header(AUTH_HEADER, &backend.token)
+        .header(auth_header.0, auth_header.1)
         .body(body_bytes)
         .send()
         .await;

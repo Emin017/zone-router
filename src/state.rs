@@ -1,4 +1,4 @@
-use crate::config::{Backend, Config, ConfigError};
+use crate::config::{AuthType, Backend, Config, ConfigError};
 use crate::stats::StatsCollector;
 use std::path::PathBuf;
 
@@ -85,11 +85,13 @@ impl AppState {
         name: String,
         url: String,
         token: String,
+        auth_type: AuthType,
     ) -> bool {
         if let Some(b) = self.config.backends.get_mut(index) {
             b.name = name;
             b.url = url;
             b.token = token;
+            b.auth_type = auth_type;
             let _ = self.persist_config();
             true
         } else {
@@ -105,7 +107,17 @@ fn generate_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ProxyConfig;
+    use crate::config::{AuthType, ProxyConfig};
+
+    fn test_backend(name: &str, url: &str, token: &str, active: bool) -> Backend {
+        Backend {
+            name: name.into(),
+            url: url.into(),
+            token: token.into(),
+            active,
+            auth_type: AuthType::default(),
+        }
+    }
 
     fn test_config() -> Config {
         Config {
@@ -114,18 +126,8 @@ mod tests {
                 local_token: String::new(),
             },
             backends: vec![
-                Backend {
-                    name: "a".into(),
-                    url: "http://a".into(),
-                    token: "ta".into(),
-                    active: true,
-                },
-                Backend {
-                    name: "b".into(),
-                    url: "http://b".into(),
-                    token: "tb".into(),
-                    active: false,
-                },
+                test_backend("a", "http://a", "ta", true),
+                test_backend("b", "http://b", "tb", false),
             ],
         }
     }
@@ -187,12 +189,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let mut config = test_config();
-        config.backends.push(Backend {
-            name: "c".into(),
-            url: "http://c".into(),
-            token: "tc".into(),
-            active: false,
-        });
+        config
+            .backends
+            .push(test_backend("c", "http://c", "tc", false));
         let mut state = AppState::new(config, path).unwrap();
         state.active_index = 1;
         state.remove_backend(0);
@@ -205,12 +204,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let mut config = test_config();
-        config.backends.push(Backend {
-            name: "c".into(),
-            url: "http://c".into(),
-            token: "tc".into(),
-            active: false,
-        });
+        config
+            .backends
+            .push(test_backend("c", "http://c", "tc", false));
         let mut state = AppState::new(config, path).unwrap();
         state.active_index = 0;
         state.remove_backend(2);

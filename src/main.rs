@@ -54,6 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             app_state.config.proxy.listen
         );
         println!("export ANTHROPIC_API_KEY={}", app_state.local_token);
+        println!("export ANTHROPIC_AUTH_TOKEN={}", app_state.local_token);
         return Ok(());
     }
 
