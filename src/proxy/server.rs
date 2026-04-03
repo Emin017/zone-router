@@ -53,18 +53,21 @@ where
 pub async fn start_with_listener(
     state: Arc<RwLock<AppState>>,
     listener: tokio::net::TcpListener,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let router = build_router(state);
     let mut make_svc = router.into_make_service();
-    let mut conn_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    // JoinSet aborts all tasks on drop, so if force_shutdown aborts this
+    // task, all child connection tasks are also terminated.
+    let mut conns = tokio::task::JoinSet::new();
 
+    let mut accept_shutdown_rx = shutdown_rx.clone();
     let shutdown = async {
         loop {
-            if *shutdown_rx.borrow() {
+            if *accept_shutdown_rx.borrow() {
                 break;
             }
-            match shutdown_rx.changed().await {
+            match accept_shutdown_rx.changed().await {
                 Ok(()) => {}
                 Err(_) => futures_util::future::pending::<()>().await,
             }
@@ -89,23 +92,42 @@ pub async fn start_with_listener(
         .await
         .map_err(|e| format!("make_service error: {e:?}"))?;
 
-        // Prune completed connection handles to avoid unbounded growth.
-        conn_handles.retain(|h| !h.is_finished());
-
-        conn_handles.push(tokio::spawn(async move {
+        let mut conn_shutdown_rx = shutdown_rx.clone();
+        conns.spawn(async move {
             let io = TokioIo::new(stream);
             let mut builder = auto::Builder::new(TokioExecutor::new());
             builder.http1().keep_alive(false);
-            if let Err(e) = builder.serve_connection(io, TowerToHyperService(svc)).await {
-                eprintln!("connection error: {e}");
+            let mut conn = Box::pin(builder.serve_connection(io, TowerToHyperService(svc)));
+
+            // Poll the connection, but also watch for the shutdown signal.
+            // On shutdown, call graceful_shutdown so the connection finishes
+            // its current request and then closes.
+            tokio::select! {
+                result = &mut conn => {
+                    if let Err(e) = result {
+                        eprintln!("connection error: {e}");
+                    }
+                }
+                () = async {
+                    loop {
+                        if *conn_shutdown_rx.borrow() { break; }
+                        if conn_shutdown_rx.changed().await.is_err() {
+                            futures_util::future::pending::<()>().await;
+                        }
+                    }
+                } => {
+                    conn.as_mut().graceful_shutdown();
+                    if let Err(e) = conn.await {
+                        eprintln!("connection error: {e}");
+                    }
+                }
             }
-        }));
+        });
     }
 
-    // Wait for all in-flight connections to complete (graceful drain).
-    for handle in conn_handles {
-        let _ = handle.await;
-    }
+    // Wait for in-flight connections to drain. If force_shutdown aborts this
+    // task, JoinSet's Drop aborts all child tasks automatically.
+    while conns.join_next().await.is_some() {}
 
     Ok(())
 }
