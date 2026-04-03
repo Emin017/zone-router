@@ -187,14 +187,7 @@ pub fn handle_input_mode(
             }
             InputMode::EditToken => {
                 tui.pending_token = tui.input_buffer.clone();
-                let current_auth_type = rt
-                    .block_on(state.read())
-                    .config
-                    .backends
-                    .get(tui.cursor)
-                    .map(|b| b.auth_type)
-                    .unwrap_or_default();
-                tui.input_buffer = current_auth_type.to_string();
+                tui.input_buffer.clear();
                 tui.mode = InputMode::EditAuthType;
             }
             InputMode::EditAuthType => {

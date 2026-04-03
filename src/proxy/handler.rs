@@ -93,19 +93,21 @@ pub async fn proxy_handler(
         (s.local_token.clone(), backend)
     };
 
-    let request_token = headers
-        .get(AUTH_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .or_else(|| {
-            headers
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| {
-                    v.get(7..)
-                        .filter(|_| v[..7].eq_ignore_ascii_case("Bearer "))
-                })
-        })
-        .unwrap_or("");
+    let request_token = if headers.get(AUTH_HEADER).is_some() {
+        headers
+            .get(AUTH_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+    } else {
+        headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| {
+                v.get(7..)
+                    .filter(|_| v.len() >= 7 && v[..7].eq_ignore_ascii_case("Bearer "))
+            })
+            .unwrap_or("")
+    };
 
     if request_token != local_token {
         return StatusCode::UNAUTHORIZED.into_response();
