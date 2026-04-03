@@ -156,18 +156,20 @@ pub async fn proxy_handler(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    let may_rewrite = matches!(backend.model_map, Some(ref mm) if mm.has_any());
+    let may_rewrite = backend.model_map.as_ref().is_some_and(|mm| mm.has_any());
     let body_bytes = if may_rewrite {
         rewrite_model(body_bytes, backend.model_map.as_ref().unwrap())
     } else {
         body_bytes
     };
 
-    // Strip content-length when the body may have been rewritten to a different
-    // size; reqwest will recalculate it from the actual body.
+    // Strip body-dependent headers when the body may have been rewritten to
+    // different bytes; reqwest will recalculate Content-Length from the actual body.
     let forwarded_headers = if may_rewrite {
         let mut h = forwarded_headers;
         h.remove(reqwest::header::CONTENT_LENGTH);
+        h.remove("content-md5");
+        h.remove("digest");
         h
     } else {
         forwarded_headers
