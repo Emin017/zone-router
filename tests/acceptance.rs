@@ -1,8 +1,8 @@
-use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::routing::post;
+use axum::Router;
 use futures_util::stream;
 use std::sync::Arc;
 use std::time::Duration;
@@ -708,6 +708,133 @@ fn backend_switch_persists_active_state() {
     assert!(
         loaded.backends[1].active,
         "second backend should be active after switch"
+    );
+}
+
+// --- Model map persistence tests ---
+
+#[test]
+fn add_backend_with_model_map_persists_to_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let config = zone_router::config::Config {
+        proxy: zone_router::config::ProxyConfig {
+            listen: "127.0.0.1:0".into(),
+            local_token: "tok".into(),
+        },
+        backends: vec![],
+    };
+    let mut state = zone_router::state::AppState::new(config, path.clone()).unwrap();
+    state.add_backend(zone_router::config::Backend {
+        name: "mapped".into(),
+        url: "http://m".into(),
+        token: "tm".into(),
+        active: false,
+        auth_type: zone_router::config::AuthType::default(),
+        model_map: Some(zone_router::config::ModelMap {
+            haiku: Some("h-model".into()),
+            sonnet: Some("s-model".into()),
+            opus: None,
+        }),
+    });
+
+    let loaded = zone_router::config::Config::load_or_create(&path).unwrap();
+    let mm = loaded.backends[0]
+        .model_map
+        .as_ref()
+        .expect("model_map should be persisted");
+    assert_eq!(mm.haiku.as_deref(), Some("h-model"));
+    assert_eq!(mm.sonnet.as_deref(), Some("s-model"));
+    assert!(mm.opus.is_none());
+}
+
+#[test]
+fn update_backend_with_model_map_persists_to_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let config = zone_router::config::Config {
+        proxy: zone_router::config::ProxyConfig {
+            listen: "127.0.0.1:0".into(),
+            local_token: "tok".into(),
+        },
+        backends: vec![zone_router::config::Backend {
+            name: "plain".into(),
+            url: "http://p".into(),
+            token: "tp".into(),
+            active: true,
+            auth_type: zone_router::config::AuthType::default(),
+            model_map: None,
+        }],
+    };
+    let mut state = zone_router::state::AppState::new(config, path.clone()).unwrap();
+    state.update_backend(
+        0,
+        "plain".into(),
+        "http://p".into(),
+        "tp".into(),
+        zone_router::config::AuthType::default(),
+        Some(zone_router::config::ModelMap {
+            haiku: None,
+            sonnet: None,
+            opus: Some("o-model".into()),
+        }),
+    );
+
+    let loaded = zone_router::config::Config::load_or_create(&path).unwrap();
+    let mm = loaded.backends[0]
+        .model_map
+        .as_ref()
+        .expect("model_map should be persisted after update");
+    assert!(mm.haiku.is_none());
+    assert!(mm.sonnet.is_none());
+    assert_eq!(mm.opus.as_deref(), Some("o-model"));
+}
+
+#[test]
+fn update_backend_clearing_model_map_removes_section_from_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let config = zone_router::config::Config {
+        proxy: zone_router::config::ProxyConfig {
+            listen: "127.0.0.1:0".into(),
+            local_token: "tok".into(),
+        },
+        backends: vec![zone_router::config::Backend {
+            name: "was-mapped".into(),
+            url: "http://w".into(),
+            token: "tw".into(),
+            active: true,
+            auth_type: zone_router::config::AuthType::default(),
+            model_map: Some(zone_router::config::ModelMap {
+                haiku: Some("h".into()),
+                sonnet: Some("s".into()),
+                opus: Some("o".into()),
+            }),
+        }],
+    };
+    let mut state = zone_router::state::AppState::new(config, path.clone()).unwrap();
+
+    // Clear the model_map
+    state.update_backend(
+        0,
+        "was-mapped".into(),
+        "http://w".into(),
+        "tw".into(),
+        zone_router::config::AuthType::default(),
+        None,
+    );
+
+    let loaded = zone_router::config::Config::load_or_create(&path).unwrap();
+    assert!(
+        loaded.backends[0].model_map.is_none(),
+        "model_map should be None after clearing"
+    );
+
+    // Also verify the raw TOML doesn't contain [backends.model_map]
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        !raw.contains("[backends.model_map]"),
+        "TOML should not contain [backends.model_map] section after clearing, got:\n{raw}"
     );
 }
 
@@ -1549,17 +1676,276 @@ mod tui_tests {
     }
 
     #[test]
-    fn backend_list_shows_m_marker() {
-        // This is a visual test — we verify the model_map field is set correctly
-        // and trust the UI rendering code uses it (tested via draw function)
-        let mm = zone_router::config::ModelMap {
-            haiku: None,
-            sonnet: Some("s".into()),
-            opus: None,
-        };
-        assert!(mm.has_any());
+    fn edit_flow_prefills_model_map_input_buffer() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
 
-        let empty_mm = zone_router::config::ModelMap::default();
-        assert!(!empty_mm.has_any());
+        // Set a model_map on backend 0
+        {
+            let mut s = rt.block_on(state.write());
+            s.config.backends[0].model_map = Some(zone_router::config::ModelMap {
+                haiku: Some("h-model".into()),
+                sonnet: None,
+                opus: Some("o-model".into()),
+            });
+        }
+
+        // Walk through edit flow to reach EditModelMap
+        tui.cursor = 0;
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('e')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditName);
+
+        // Accept name
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        // Accept URL
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        // Accept token
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditAuthType);
+
+        // Accept auth type (empty = keep current)
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditModelMap);
+
+        // Verify input_buffer is pre-filled with existing model_map
+        assert!(
+            tui.input_buffer.contains("haiku=h-model"),
+            "should pre-fill haiku mapping, got: {}",
+            tui.input_buffer
+        );
+        assert!(
+            tui.input_buffer.contains("opus=o-model"),
+            "should pre-fill opus mapping, got: {}",
+            tui.input_buffer
+        );
+        assert!(
+            !tui.input_buffer.contains("sonnet"),
+            "should not pre-fill unmapped sonnet, got: {}",
+            tui.input_buffer
+        );
+    }
+
+    #[test]
+    fn add_model_map_invalid_input_stays_in_mode_then_retry_succeeds() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        // Fast-forward to AddModelMap
+        tui.mode = InputMode::AddModelMap;
+        tui.pending_name = "retry".into();
+        tui.pending_url = "http://r".into();
+        tui.pending_token = "tr".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Type invalid input (bad format: colon instead of equals)
+        for c in "haiku:bad".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        // Should stay in AddModelMap mode
+        assert_eq!(tui.mode, InputMode::AddModelMap);
+        // Backend should not have been added
+        assert_eq!(
+            rt.block_on(state.read()).config.backends.len(),
+            initial_count
+        );
+
+        // Now type valid input and retry
+        for c in "sonnet=glm-5".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        assert_eq!(tui.mode, InputMode::Normal);
+        let s = rt.block_on(state.read());
+        assert_eq!(s.config.backends.len(), initial_count + 1);
+        let added = s.config.backends.last().unwrap();
+        assert_eq!(added.name, "retry");
+        assert_eq!(
+            added.model_map.as_ref().unwrap().sonnet.as_deref(),
+            Some("glm-5")
+        );
+    }
+
+    #[test]
+    fn edit_model_map_invalid_input_stays_in_mode_then_retry_succeeds() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        // Fast-forward to EditModelMap
+        tui.mode = InputMode::EditModelMap;
+        tui.cursor = 0;
+        tui.pending_name = "a".into();
+        tui.pending_url = "http://a".into();
+        tui.pending_token = "ta".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        let original_name = rt.block_on(state.read()).config.backends[0].name.clone();
+
+        // Type invalid input (unknown key)
+        for c in "foo=bar".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        // Should stay in EditModelMap mode
+        assert_eq!(tui.mode, InputMode::EditModelMap);
+        // Backend should be unchanged
+        assert_eq!(
+            rt.block_on(state.read()).config.backends[0].name,
+            original_name
+        );
+
+        // Now type valid input and retry
+        for c in "opus=o-model".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        assert_eq!(tui.mode, InputMode::Normal);
+        let s = rt.block_on(state.read());
+        assert_eq!(
+            s.config.backends[0]
+                .model_map
+                .as_ref()
+                .unwrap()
+                .opus
+                .as_deref(),
+            Some("o-model")
+        );
+    }
+
+    #[test]
+    fn backend_list_shows_m_marker_when_model_map_present() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let config = zone_router::config::Config {
+            proxy: zone_router::config::ProxyConfig {
+                listen: "127.0.0.1:0".into(),
+                local_token: "tok".into(),
+            },
+            backends: vec![
+                zone_router::config::Backend {
+                    name: "mapped".into(),
+                    url: "http://m".into(),
+                    token: "tm".into(),
+                    active: true,
+                    auth_type: zone_router::config::AuthType::default(),
+                    model_map: Some(zone_router::config::ModelMap {
+                        haiku: None,
+                        sonnet: Some("glm-5-turbo".into()),
+                        opus: None,
+                    }),
+                },
+                zone_router::config::Backend {
+                    name: "plain".into(),
+                    url: "http://p".into(),
+                    token: "tp".into(),
+                    active: false,
+                    auth_type: zone_router::config::AuthType::default(),
+                    model_map: None,
+                },
+            ],
+        };
+        let state = std::sync::Arc::new(tokio::sync::RwLock::new(
+            zone_router::state::AppState::new(config, dir.path().join("m-marker.toml")).unwrap(),
+        ));
+        let app_state = rt.block_on(state.read()).clone();
+        let tui_state = TuiState::default();
+
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| zone_router::tui::ui::draw(frame, &app_state, &tui_state))
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let rendered: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            rendered.contains("[M]"),
+            "backend with model_map should show [M] marker in rendered output"
+        );
+        // "plain" backend should NOT have [M] next to it
+        // Find the line with "plain" and verify no [M] on that line
+        for line in rendered.lines() {
+            if line.contains("plain") {
+                assert!(
+                    !line.contains("[M]"),
+                    "backend without model_map should not show [M], got: {line}"
+                );
+            }
+        }
     }
 }

@@ -1,9 +1,9 @@
 use crate::state::AppState;
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::Frame;
 
 use super::app::{FocusPanel, InputMode, TuiState};
 

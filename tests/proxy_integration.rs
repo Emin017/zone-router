@@ -1,7 +1,9 @@
-use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use axum::response::sse::{Event, Sse};
 use axum::routing::post;
+use axum::Router;
+use futures_util::stream;
 use tower::ServiceExt;
 
 mod common;
@@ -171,11 +173,9 @@ async fn headers_pass_through() {
     let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
         .await
         .unwrap();
-    assert!(
-        String::from_utf8(body.to_vec())
-            .unwrap()
-            .contains("version=2024-01-01")
-    );
+    assert!(String::from_utf8(body.to_vec())
+        .unwrap()
+        .contains("version=2024-01-01"));
 }
 
 #[tokio::test]
@@ -812,4 +812,64 @@ async fn json_without_model_field_passes_through() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["messages"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn model_map_rewrites_body_for_sse_response() {
+    // Backend that validates the forwarded body model field and returns SSE
+    let app = Router::new().route(
+        "/v1/messages",
+        post(|body: String| async move {
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let model = v["model"].as_str().unwrap().to_string();
+            let events = vec![
+                Ok::<_, std::convert::Infallible>(Event::default().data(format!("model={model}"))),
+                Ok(Event::default().data("[DONE]")),
+            ];
+            Sse::new(stream::iter(events))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let mm = zone_router::config::ModelMap {
+        haiku: None,
+        sonnet: Some("glm-5-turbo".into()),
+        opus: None,
+    };
+    let state = make_state_with_model_map(
+        "sse-mm",
+        &format!("http://{addr}"),
+        "tok",
+        "secret",
+        Some(mm),
+    );
+    let router = zone_router::proxy::server::build_router(state);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"claude-sonnet-4-20250514","stream":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8(body.to_vec()).unwrap();
+    // The backend echoes the model it received — should be the rewritten name
+    assert!(
+        body_str.contains("model=glm-5-turbo"),
+        "SSE backend should receive rewritten model, got: {body_str}"
+    );
 }
