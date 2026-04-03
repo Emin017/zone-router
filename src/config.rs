@@ -507,4 +507,27 @@ opus = "glm-5.1"
         assert!(mm.sonnet.is_none());
         assert_eq!(mm.opus.as_deref(), Some("o"));
     }
+
+    #[test]
+    fn model_map_unknown_keys_are_ignored() {
+        let toml_str = r#"
+[proxy]
+
+[[backends]]
+name = "unk"
+url = "http://unk"
+token = "tok"
+
+[backends.model_map]
+sonnet = "glm-5-turbo"
+gpt4 = "should-be-ignored"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let mm = config.backends[0].model_map.as_ref().unwrap();
+        assert_eq!(mm.sonnet.as_deref(), Some("glm-5-turbo"));
+        // Unknown keys are silently ignored by serde's default behavior
+        // (no #[serde(deny_unknown_fields)] on ModelMap)
+        assert!(mm.haiku.is_none());
+        assert!(mm.opus.is_none());
+    }
 }
