@@ -960,4 +960,328 @@ mod tui_tests {
         );
         assert!(should_exit);
     }
+
+    #[test]
+    fn add_flow_advances_to_auth_type_after_token() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        // Start add flow
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('a')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::AddName);
+
+        // Enter name
+        for c in "new-backend".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::AddUrl);
+
+        // Enter URL
+        for c in "http://new".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::AddToken);
+
+        // Enter token
+        for c in "tok-new".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        // Must now be in AddAuthType — not Normal
+        assert_eq!(tui.mode, InputMode::AddAuthType);
+    }
+
+    #[test]
+    fn add_flow_defaults_to_api_key_on_empty_input() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        // Fast-forward to AddAuthType
+        tui.mode = InputMode::AddAuthType;
+        tui.pending_name = "defaulted".into();
+        tui.pending_url = "http://d".into();
+        tui.pending_token = "td".into();
+
+        // Submit empty input → should default to ApiKey and complete
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+
+        let s = rt.block_on(state.read());
+        assert_eq!(s.config.backends.len(), initial_count + 1);
+        let added = s.config.backends.last().unwrap();
+        assert_eq!(added.name, "defaulted");
+        assert_eq!(added.auth_type, zone_router::config::AuthType::ApiKey);
+    }
+
+    #[test]
+    fn add_flow_cannot_skip_auth_type_step() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        // Start add flow and go through name, url, token
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('a')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        // Name
+        for c in "skip-test".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        // URL
+        for c in "http://skip".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        // Token — after submitting, mode should be AddAuthType, NOT Normal
+        for c in "tok".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        // Backend should NOT have been created yet
+        assert_eq!(tui.mode, InputMode::AddAuthType);
+        let count = rt.block_on(state.read()).config.backends.len();
+        assert_eq!(
+            count, initial_count,
+            "backend must not be created before auth type step"
+        );
+    }
+
+    #[test]
+    fn edit_flow_can_change_auth_type_to_bearer() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        // Verify initial auth type is ApiKey
+        {
+            let s = rt.block_on(state.read());
+            assert_eq!(
+                s.config.backends[0].auth_type,
+                zone_router::config::AuthType::ApiKey
+            );
+        }
+
+        // Start edit flow on backend 0
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('e')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditName);
+
+        // Accept current name
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditUrl);
+
+        // Accept current URL
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditToken);
+
+        // Accept current token
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditAuthType);
+
+        // Clear the pre-filled value and type "bearer"
+        // First clear out the pre-filled "api-key" text
+        for _ in 0..tui.input_buffer.len() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Backspace),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        for c in "bearer".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+
+        let s = rt.block_on(state.read());
+        assert_eq!(
+            s.config.backends[0].auth_type,
+            zone_router::config::AuthType::Bearer,
+            "auth type should have changed to Bearer"
+        );
+    }
+
+    #[test]
+    fn invalid_auth_type_input_stays_in_mode_add() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        // Fast-forward to AddAuthType
+        tui.mode = InputMode::AddAuthType;
+        tui.pending_name = "invalid-test".into();
+        tui.pending_url = "http://inv".into();
+        tui.pending_token = "tinv".into();
+
+        // Type invalid input
+        for c in "wrong".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        // Should still be in AddAuthType, backend NOT created
+        assert_eq!(tui.mode, InputMode::AddAuthType);
+        let count = rt.block_on(state.read()).config.backends.len();
+        assert_eq!(
+            count, initial_count,
+            "invalid auth type should not create backend"
+        );
+    }
+
+    #[test]
+    fn invalid_auth_type_input_stays_in_mode_edit() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        // Fast-forward to EditAuthType
+        tui.mode = InputMode::EditAuthType;
+        tui.pending_name = "a".into();
+        tui.pending_url = "http://a".into();
+        tui.pending_token = "ta".into();
+
+        // Remember original auth type
+        let original_auth_type = {
+            let s = rt.block_on(state.read());
+            s.config.backends[0].auth_type.clone()
+        };
+
+        // Type invalid input
+        for c in "xyz".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        // Should still be in EditAuthType, backend NOT modified
+        assert_eq!(tui.mode, InputMode::EditAuthType);
+        let s = rt.block_on(state.read());
+        assert_eq!(
+            s.config.backends[0].auth_type, original_auth_type,
+            "invalid auth type should not change backend"
+        );
+    }
 }

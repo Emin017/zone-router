@@ -21,10 +21,11 @@ impl fmt::Display for AuthType {
 }
 
 impl AuthType {
-    pub fn from_input(s: &str) -> Self {
+    pub fn from_input(s: &str) -> Option<Self> {
         match s.trim() {
-            "2" | "bearer" => Self::Bearer,
-            _ => Self::ApiKey,
+            "" | "1" | "api-key" => Some(Self::ApiKey),
+            "2" | "bearer" => Some(Self::Bearer),
+            _ => None,
         }
     }
 }

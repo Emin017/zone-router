@@ -142,17 +142,20 @@ pub fn handle_input_mode(
                 tui.mode = InputMode::AddAuthType;
             }
             InputMode::AddAuthType => {
-                let auth_type = AuthType::from_input(&tui.input_buffer);
-                let backend = Backend {
-                    name: tui.pending_name.clone(),
-                    url: tui.pending_url.clone(),
-                    token: tui.pending_token.clone(),
-                    active: false,
-                    auth_type,
-                };
-                rt.block_on(state.write()).add_backend(backend);
-                tui.input_buffer.clear();
-                tui.mode = InputMode::Normal;
+                if let Some(auth_type) = AuthType::from_input(&tui.input_buffer) {
+                    let backend = Backend {
+                        name: tui.pending_name.clone(),
+                        url: tui.pending_url.clone(),
+                        token: tui.pending_token.clone(),
+                        active: false,
+                        auth_type,
+                    };
+                    rt.block_on(state.write()).add_backend(backend);
+                    tui.input_buffer.clear();
+                    tui.mode = InputMode::Normal;
+                } else {
+                    tui.input_buffer.clear();
+                }
             }
             InputMode::EditName => {
                 tui.pending_name = tui.input_buffer.clone();
@@ -189,16 +192,19 @@ pub fn handle_input_mode(
                 tui.mode = InputMode::EditAuthType;
             }
             InputMode::EditAuthType => {
-                let auth_type = AuthType::from_input(&tui.input_buffer);
-                rt.block_on(state.write()).update_backend(
-                    tui.cursor,
-                    tui.pending_name.clone(),
-                    tui.pending_url.clone(),
-                    tui.pending_token.clone(),
-                    auth_type,
-                );
-                tui.input_buffer.clear();
-                tui.mode = InputMode::Normal;
+                if let Some(auth_type) = AuthType::from_input(&tui.input_buffer) {
+                    rt.block_on(state.write()).update_backend(
+                        tui.cursor,
+                        tui.pending_name.clone(),
+                        tui.pending_url.clone(),
+                        tui.pending_token.clone(),
+                        auth_type,
+                    );
+                    tui.input_buffer.clear();
+                    tui.mode = InputMode::Normal;
+                } else {
+                    tui.input_buffer.clear();
+                }
             }
             InputMode::Search => {
                 tui.search_query = tui.input_buffer.clone();
