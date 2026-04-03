@@ -101,8 +101,7 @@ pub async fn start_with_listener(
         while conns.try_join_next().is_some() {}
         conns.spawn(async move {
             let io = TokioIo::new(stream);
-            let mut builder = auto::Builder::new(TokioExecutor::new());
-            builder.http1().keep_alive(false);
+            let builder = auto::Builder::new(TokioExecutor::new());
             let mut conn = Box::pin(builder.serve_connection(io, TowerToHyperService(svc)));
 
             // Poll the connection, but also watch for the shutdown signal.
@@ -131,8 +130,9 @@ pub async fn start_with_listener(
         });
     }
 
-    // Wait for in-flight connections to drain. If force_shutdown aborts this
-    // task, JoinSet's Drop aborts all child tasks automatically.
+    // Close the listener so new TCP connects are refused immediately,
+    // then wait for in-flight connections to drain.
+    drop(listener);
     while conns.join_next().await.is_some() {}
 
     Ok(())
