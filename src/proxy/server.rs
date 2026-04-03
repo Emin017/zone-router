@@ -93,6 +93,8 @@ pub async fn start_with_listener(
         .map_err(|e| format!("make_service error: {e:?}"))?;
 
         let mut conn_shutdown_rx = shutdown_rx.clone();
+        // Reap completed connection tasks to avoid unbounded memory growth.
+        while conns.try_join_next().is_some() {}
         conns.spawn(async move {
             let io = TokioIo::new(stream);
             let mut builder = auto::Builder::new(TokioExecutor::new());
