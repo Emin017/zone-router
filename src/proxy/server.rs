@@ -60,9 +60,13 @@ pub async fn start_with_listener(
     let mut conn_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     let shutdown = async {
-        while !*shutdown_rx.borrow() {
-            if shutdown_rx.changed().await.is_err() {
+        loop {
+            if *shutdown_rx.borrow() {
                 break;
+            }
+            match shutdown_rx.changed().await {
+                Ok(()) => {}
+                Err(_) => futures_util::future::pending::<()>().await,
             }
         }
     };
@@ -104,10 +108,6 @@ pub async fn start_with_listener(
     for handle in conn_handles {
         let _ = handle.await;
     }
-
-    // Keep the function alive (and the listener bound) until force_shutdown
-    // aborts this task, so the port remains reachable during the grace period.
-    futures_util::future::pending::<()>().await;
 
     Ok(())
 }
