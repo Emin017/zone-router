@@ -156,17 +156,14 @@ pub async fn proxy_handler(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    let (body_bytes, body_changed) = if let Some(ref mm) = backend.model_map {
-        if mm.has_any() {
+    let (body_bytes, body_changed) = match backend.model_map.as_ref().filter(|mm| mm.has_any()) {
+        Some(mm) => {
             let original_ptr = body_bytes.as_ptr();
             let rewritten = rewrite_model(body_bytes, mm);
             let changed = rewritten.as_ptr() != original_ptr;
             (rewritten, changed)
-        } else {
-            (body_bytes, false)
         }
-    } else {
-        (body_bytes, false)
+        None => (body_bytes, false),
     };
 
     // Strip body-dependent headers only when the payload actually changed;

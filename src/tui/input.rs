@@ -6,6 +6,17 @@ use tokio::sync::RwLock;
 
 use super::app::{FocusPanel, InputMode, TuiState};
 
+/// Resolve auth-type from the input buffer, returning `None` on invalid input.
+/// When input is empty and not previously rejected, returns the provided `default`.
+fn resolve_auth_type(input: &str, default: AuthType, rejected: bool) -> Option<AuthType> {
+    let input_empty = input.trim().is_empty();
+    if input_empty && !rejected {
+        Some(default)
+    } else {
+        AuthType::from_input(input).filter(|_| !input_empty)
+    }
+}
+
 /// Returns true if the TUI should exit.
 pub fn handle_input(
     key: KeyEvent,
@@ -143,14 +154,11 @@ pub fn handle_input_mode(
                 tui.mode = InputMode::AddAuthType;
             }
             InputMode::AddAuthType => {
-                let input_empty = tui.input_buffer.trim().is_empty();
-                let auth_type = if input_empty && !tui.auth_type_rejected {
-                    AuthType::default()
-                } else if let Some(at) =
-                    AuthType::from_input(&tui.input_buffer).filter(|_| !input_empty)
-                {
-                    at
-                } else {
+                let Some(auth_type) = resolve_auth_type(
+                    &tui.input_buffer,
+                    AuthType::default(),
+                    tui.auth_type_rejected,
+                ) else {
                     tui.input_buffer.clear();
                     tui.auth_type_rejected = true;
                     return;
@@ -222,14 +230,11 @@ pub fn handle_input_mode(
                 tui.mode = InputMode::EditAuthType;
             }
             InputMode::EditAuthType => {
-                let input_empty = tui.input_buffer.trim().is_empty();
-                let auth_type = if input_empty && !tui.auth_type_rejected {
-                    tui.pending_auth_type.unwrap_or_default()
-                } else if let Some(at) =
-                    AuthType::from_input(&tui.input_buffer).filter(|_| !input_empty)
-                {
-                    at
-                } else {
+                let Some(auth_type) = resolve_auth_type(
+                    &tui.input_buffer,
+                    tui.pending_auth_type.unwrap_or_default(),
+                    tui.auth_type_rejected,
+                ) else {
                     tui.input_buffer.clear();
                     tui.auth_type_rejected = true;
                     return;
@@ -294,14 +299,11 @@ pub fn handle_input_mode(
             tui.input_buffer.pop();
         }
         KeyCode::Tab if tui.mode == InputMode::AddAuthType => {
-            let input_empty = tui.input_buffer.trim().is_empty();
-            let auth_type = if input_empty && !tui.auth_type_rejected {
-                AuthType::default()
-            } else if let Some(at) =
-                AuthType::from_input(&tui.input_buffer).filter(|_| !input_empty)
-            {
-                at
-            } else {
+            let Some(auth_type) = resolve_auth_type(
+                &tui.input_buffer,
+                AuthType::default(),
+                tui.auth_type_rejected,
+            ) else {
                 tui.input_buffer.clear();
                 tui.auth_type_rejected = true;
                 return;
@@ -312,14 +314,11 @@ pub fn handle_input_mode(
             tui.mode = InputMode::AddModelMap;
         }
         KeyCode::Tab if tui.mode == InputMode::EditAuthType => {
-            let input_empty = tui.input_buffer.trim().is_empty();
-            let auth_type = if input_empty && !tui.auth_type_rejected {
-                tui.pending_auth_type.unwrap_or_default()
-            } else if let Some(at) =
-                AuthType::from_input(&tui.input_buffer).filter(|_| !input_empty)
-            {
-                at
-            } else {
+            let Some(auth_type) = resolve_auth_type(
+                &tui.input_buffer,
+                tui.pending_auth_type.unwrap_or_default(),
+                tui.auth_type_rejected,
+            ) else {
                 tui.input_buffer.clear();
                 tui.auth_type_rejected = true;
                 return;
