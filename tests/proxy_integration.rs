@@ -357,10 +357,10 @@ async fn bearer_auth_mixed_case() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// --- Client Authorization header preservation ---
+// --- Client Authorization header stripping ---
 
 #[tokio::test]
-async fn client_authorization_preserved_when_authed_via_api_key() {
+async fn client_authorization_stripped_when_authed_via_api_key() {
     let app = Router::new().route(
         "/v1/messages",
         post(|headers: axum::http::HeaderMap| async move {
@@ -396,8 +396,8 @@ async fn client_authorization_preserved_when_authed_via_api_key() {
         .unwrap();
     let body_str = String::from_utf8(body.to_vec()).unwrap();
     assert!(
-        body_str.contains("authorization=Bearer user-jwt-token"),
-        "client Authorization header should be forwarded when authed via x-api-key, got: {body_str}"
+        body_str.contains("authorization=missing"),
+        "client Authorization header should be stripped even when authed via x-api-key, got: {body_str}"
     );
 }
 

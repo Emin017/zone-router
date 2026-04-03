@@ -93,11 +93,6 @@ pub async fn proxy_handler(
         (s.local_token.clone(), backend)
     };
 
-    let authed_via_api_key = headers
-        .get(AUTH_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .is_some();
-
     let request_token = headers
         .get(AUTH_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -131,17 +126,7 @@ pub async fn proxy_handler(
         .iter()
         .filter(|(name, _)| {
             let n = name.as_str().to_lowercase();
-            if n == "host" || n == AUTH_HEADER {
-                return false;
-            }
-            // Only strip Authorization if the client authenticated via Bearer,
-            // or if the backend itself sends Authorization (Bearer auth_type).
-            // When the client used x-api-key, preserve their Authorization header
-            // (it may carry a user JWT or other credential the upstream expects).
-            if n == "authorization" {
-                return authed_via_api_key && backend.auth_type != AuthType::Bearer;
-            }
-            true
+            n != AUTH_HEADER && n != "host" && n != "authorization"
         })
         .filter_map(|(name, value)| {
             let n = reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes()).ok()?;

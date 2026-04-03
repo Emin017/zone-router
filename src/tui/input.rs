@@ -144,8 +144,8 @@ pub fn handle_input_mode(
             }
             InputMode::AddAuthType => {
                 let parsed = AuthType::from_input(&tui.input_buffer);
-                if let Some(auth_type) =
-                    parsed.filter(|_| !tui.input_buffer.is_empty() || !tui.auth_type_rejected)
+                if let Some(auth_type) = parsed
+                    .filter(|_| !tui.input_buffer.trim().is_empty() || !tui.auth_type_rejected)
                 {
                     let backend = Backend {
                         name: tui.pending_name.clone(),
@@ -199,8 +199,8 @@ pub fn handle_input_mode(
             }
             InputMode::EditAuthType => {
                 let parsed = AuthType::from_input(&tui.input_buffer);
-                if let Some(auth_type) =
-                    parsed.filter(|_| !tui.input_buffer.is_empty() || !tui.auth_type_rejected)
+                if let Some(auth_type) = parsed
+                    .filter(|_| !tui.input_buffer.trim().is_empty() || !tui.auth_type_rejected)
                 {
                     rt.block_on(state.write()).update_backend(
                         tui.cursor,
