@@ -143,25 +143,29 @@ pub fn handle_input_mode(
                 tui.mode = InputMode::AddAuthType;
             }
             InputMode::AddAuthType => {
-                let parsed = AuthType::from_input(&tui.input_buffer);
-                if let Some(auth_type) = parsed
-                    .filter(|_| !tui.input_buffer.trim().is_empty() || !tui.auth_type_rejected)
+                let input_empty = tui.input_buffer.trim().is_empty();
+                let auth_type = if input_empty && !tui.auth_type_rejected {
+                    AuthType::default()
+                } else if let Some(at) =
+                    AuthType::from_input(&tui.input_buffer).filter(|_| !input_empty)
                 {
-                    let backend = Backend {
-                        name: tui.pending_name.clone(),
-                        url: tui.pending_url.clone(),
-                        token: tui.pending_token.clone(),
-                        active: false,
-                        auth_type,
-                    };
-                    rt.block_on(state.write()).add_backend(backend);
-                    tui.input_buffer.clear();
-                    tui.auth_type_rejected = false;
-                    tui.mode = InputMode::Normal;
+                    at
                 } else {
                     tui.input_buffer.clear();
                     tui.auth_type_rejected = true;
-                }
+                    return;
+                };
+                let backend = Backend {
+                    name: tui.pending_name.clone(),
+                    url: tui.pending_url.clone(),
+                    token: tui.pending_token.clone(),
+                    active: false,
+                    auth_type,
+                };
+                rt.block_on(state.write()).add_backend(backend);
+                tui.input_buffer.clear();
+                tui.auth_type_rejected = false;
+                tui.mode = InputMode::Normal;
             }
             InputMode::EditName => {
                 tui.pending_name = tui.input_buffer.clone();
@@ -197,10 +201,11 @@ pub fn handle_input_mode(
                 tui.mode = InputMode::EditAuthType;
             }
             InputMode::EditAuthType => {
-                let auth_type = if tui.input_buffer.trim().is_empty() && !tui.auth_type_rejected {
+                let input_empty = tui.input_buffer.trim().is_empty();
+                let auth_type = if input_empty && !tui.auth_type_rejected {
                     tui.pending_auth_type.unwrap_or_default()
-                } else if let Some(at) = AuthType::from_input(&tui.input_buffer)
-                    .filter(|_| !tui.input_buffer.trim().is_empty())
+                } else if let Some(at) =
+                    AuthType::from_input(&tui.input_buffer).filter(|_| !input_empty)
                 {
                     at
                 } else {

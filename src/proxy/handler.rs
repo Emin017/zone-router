@@ -104,7 +104,7 @@ pub async fn proxy_handler(
             .and_then(|v| v.to_str().ok())
             .and_then(|v| {
                 v.get(7..)
-                    .filter(|_| v.len() >= 7 && v[..7].eq_ignore_ascii_case("Bearer "))
+                    .filter(|_| v[..7].eq_ignore_ascii_case("Bearer "))
             })
             .unwrap_or("")
     };

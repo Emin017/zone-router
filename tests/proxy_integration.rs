@@ -405,25 +405,9 @@ async fn client_authorization_stripped_when_authed_via_api_key() {
 async fn client_authorization_stripped_when_authed_via_bearer() {
     // When client authenticates via Authorization: Bearer, their auth header
     // must be stripped (it's the proxy auth, not a passthrough credential)
-    let app = Router::new().route(
-        "/v1/messages",
-        post(|headers: axum::http::HeaderMap| async move {
-            let api_key = headers
-                .get("x-api-key")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("none");
-            let auth = headers
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("none");
-            format!("x-api-key={api_key},authorization={auth}")
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let (backend_url, _handle) = start_auth_echo_backend().await;
 
-    let state = make_state(vec![("fwd", &format!("http://{addr}"), "tok")], "secret");
+    let state = make_state(vec![("fwd", &backend_url, "tok")], "secret");
     let router = zone_router::proxy::server::build_router(state);
 
     let resp = router
