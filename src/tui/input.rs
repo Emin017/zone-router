@@ -192,7 +192,7 @@ pub fn handle_input_mode(
                     .config
                     .backends
                     .get(tui.cursor)
-                    .map(|b| b.auth_type.clone())
+                    .map(|b| b.auth_type)
                     .unwrap_or_default();
                 tui.input_buffer = current_auth_type.to_string();
                 tui.mode = InputMode::EditAuthType;

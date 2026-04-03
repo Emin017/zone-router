@@ -1257,7 +1257,7 @@ mod tui_tests {
         // Remember original auth type
         let original_auth_type = {
             let s = rt.block_on(state.read());
-            s.config.backends[0].auth_type.clone()
+            s.config.backends[0].auth_type
         };
 
         // Type invalid input
@@ -1344,7 +1344,7 @@ mod tui_tests {
 
         let original_auth_type = {
             let s = rt.block_on(state.read());
-            s.config.backends[0].auth_type.clone()
+            s.config.backends[0].auth_type
         };
 
         // Type invalid input and press Enter (rejected)
