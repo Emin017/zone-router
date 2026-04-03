@@ -124,6 +124,7 @@ pub fn handle_input_mode(
         KeyCode::Esc => {
             tui.mode = InputMode::Normal;
             tui.input_buffer.clear();
+            tui.auth_type_rejected = false;
         }
         KeyCode::Enter => match &tui.mode {
             InputMode::AddName => {
@@ -142,7 +143,10 @@ pub fn handle_input_mode(
                 tui.mode = InputMode::AddAuthType;
             }
             InputMode::AddAuthType => {
-                if let Some(auth_type) = AuthType::from_input(&tui.input_buffer) {
+                let parsed = AuthType::from_input(&tui.input_buffer);
+                if let Some(auth_type) =
+                    parsed.filter(|_| !tui.input_buffer.is_empty() || !tui.auth_type_rejected)
+                {
                     let backend = Backend {
                         name: tui.pending_name.clone(),
                         url: tui.pending_url.clone(),
@@ -152,9 +156,11 @@ pub fn handle_input_mode(
                     };
                     rt.block_on(state.write()).add_backend(backend);
                     tui.input_buffer.clear();
+                    tui.auth_type_rejected = false;
                     tui.mode = InputMode::Normal;
                 } else {
                     tui.input_buffer.clear();
+                    tui.auth_type_rejected = true;
                 }
             }
             InputMode::EditName => {
@@ -192,7 +198,10 @@ pub fn handle_input_mode(
                 tui.mode = InputMode::EditAuthType;
             }
             InputMode::EditAuthType => {
-                if let Some(auth_type) = AuthType::from_input(&tui.input_buffer) {
+                let parsed = AuthType::from_input(&tui.input_buffer);
+                if let Some(auth_type) =
+                    parsed.filter(|_| !tui.input_buffer.is_empty() || !tui.auth_type_rejected)
+                {
                     rt.block_on(state.write()).update_backend(
                         tui.cursor,
                         tui.pending_name.clone(),
@@ -201,9 +210,11 @@ pub fn handle_input_mode(
                         auth_type,
                     );
                     tui.input_buffer.clear();
+                    tui.auth_type_rejected = false;
                     tui.mode = InputMode::Normal;
                 } else {
                     tui.input_buffer.clear();
+                    tui.auth_type_rejected = true;
                 }
             }
             InputMode::Search => {

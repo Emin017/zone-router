@@ -1284,4 +1284,103 @@ mod tui_tests {
             "invalid auth type should not change backend"
         );
     }
+
+    #[test]
+    fn empty_enter_after_rejected_auth_type_stays_in_mode_add() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        // Fast-forward to AddAuthType
+        tui.mode = InputMode::AddAuthType;
+        tui.pending_name = "reject-test".into();
+        tui.pending_url = "http://rej".into();
+        tui.pending_token = "trej".into();
+
+        // Type invalid input and press Enter (rejected)
+        for c in "garbage".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::AddAuthType);
+
+        // Now press Enter again with empty buffer — must NOT silently default to api-key
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        assert_eq!(
+            tui.mode,
+            InputMode::AddAuthType,
+            "empty Enter after rejection must not silently default to api-key"
+        );
+        let count = rt.block_on(state.read()).config.backends.len();
+        assert_eq!(
+            count, initial_count,
+            "backend must not be created by empty Enter after rejection"
+        );
+    }
+
+    #[test]
+    fn empty_enter_after_rejected_auth_type_stays_in_mode_edit() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        tui.mode = InputMode::EditAuthType;
+        tui.pending_name = "a".into();
+        tui.pending_url = "http://a".into();
+        tui.pending_token = "ta".into();
+
+        let original_auth_type = {
+            let s = rt.block_on(state.read());
+            s.config.backends[0].auth_type.clone()
+        };
+
+        // Type invalid input and press Enter (rejected)
+        for c in "nope".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditAuthType);
+
+        // Now press Enter again with empty buffer — must NOT silently default to api-key
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        assert_eq!(
+            tui.mode,
+            InputMode::EditAuthType,
+            "empty Enter after rejection must not silently default to api-key"
+        );
+        let s = rt.block_on(state.read());
+        assert_eq!(
+            s.config.backends[0].auth_type, original_auth_type,
+            "backend auth type must not change from empty Enter after rejection"
+        );
+    }
 }

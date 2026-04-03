@@ -313,6 +313,143 @@ async fn invalid_x_api_key_with_valid_bearer_rejected() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
+// --- Case-insensitive Bearer parsing ---
+
+#[tokio::test]
+async fn bearer_auth_case_insensitive() {
+    let (backend_url, _handle) = start_mock_backend().await;
+    let state = make_state(vec![("mock", &backend_url, "tok")], "local-secret");
+    let router = zone_router::proxy::server::build_router(state);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("authorization", "bearer local-secret")
+                .body(Body::from("test"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn bearer_auth_mixed_case() {
+    let (backend_url, _handle) = start_mock_backend().await;
+    let state = make_state(vec![("mock", &backend_url, "tok")], "local-secret");
+    let router = zone_router::proxy::server::build_router(state);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("authorization", "BEARER local-secret")
+                .body(Body::from("test"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// --- Client Authorization header preservation ---
+
+#[tokio::test]
+async fn client_authorization_preserved_when_authed_via_api_key() {
+    let app = Router::new().route(
+        "/v1/messages",
+        post(|headers: axum::http::HeaderMap| async move {
+            let auth = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("missing");
+            format!("authorization={auth}")
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let state = make_state(vec![("fwd", &format!("http://{addr}"), "tok")], "secret");
+    let router = zone_router::proxy::server::build_router(state);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .header("authorization", "Bearer user-jwt-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        body_str.contains("authorization=Bearer user-jwt-token"),
+        "client Authorization header should be forwarded when authed via x-api-key, got: {body_str}"
+    );
+}
+
+#[tokio::test]
+async fn client_authorization_stripped_when_authed_via_bearer() {
+    // When client authenticates via Authorization: Bearer, their auth header
+    // must be stripped (it's the proxy auth, not a passthrough credential)
+    let app = Router::new().route(
+        "/v1/messages",
+        post(|headers: axum::http::HeaderMap| async move {
+            let api_key = headers
+                .get("x-api-key")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("none");
+            let auth = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("none");
+            format!("x-api-key={api_key},authorization={auth}")
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let state = make_state(vec![("fwd", &format!("http://{addr}"), "tok")], "secret");
+    let router = zone_router::proxy::server::build_router(state);
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("authorization", "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8(body.to_vec()).unwrap();
+    // The backend uses ApiKey auth_type by default, so outbound sets x-api-key.
+    // The client's Authorization (which was used for proxy auth) must be stripped.
+    assert!(
+        body_str.contains("x-api-key=tok"),
+        "should set outbound x-api-key, got: {body_str}"
+    );
+}
+
 // --- Outbound auth type tests ---
 
 /// Mock backend that echoes both x-api-key and authorization headers.

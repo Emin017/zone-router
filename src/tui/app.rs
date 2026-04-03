@@ -56,6 +56,7 @@ pub struct TuiState {
     pub g_pressed: bool,
     pub log_scroll: usize,
     pub focus: FocusPanel,
+    pub auth_type_rejected: bool,
 }
 
 impl Default for TuiState {
@@ -71,6 +72,7 @@ impl Default for TuiState {
             g_pressed: false,
             log_scroll: 0,
             focus: FocusPanel::Backends,
+            auth_type_rejected: false,
         }
     }
 }
