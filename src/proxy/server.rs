@@ -81,7 +81,11 @@ pub async fn start_with_listener(
             () = &mut shutdown => break,
             result = listener.accept() => match result {
                 Ok((stream, _)) => stream,
-                Err(e) => { eprintln!("accept error: {e}"); continue; }
+                Err(e) => {
+                    eprintln!("accept error: {e}");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
             },
         };
 
