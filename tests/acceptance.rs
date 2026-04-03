@@ -1174,16 +1174,7 @@ mod tui_tests {
         tui.pending_url = "http://d".into();
         tui.pending_token = "td".into();
 
-        // Submit empty input → should default to ApiKey and move to AddModelMap
-        zone_router::tui::input::handle_input_mode(
-            key(KeyCode::Enter),
-            &mut tui,
-            &state,
-            rt.handle(),
-        );
-        assert_eq!(tui.mode, InputMode::AddModelMap);
-
-        // Submit empty input → skip model map and complete
+        // Submit empty input → should default to ApiKey and complete
         zone_router::tui::input::handle_input_mode(
             key(KeyCode::Enter),
             &mut tui,
@@ -1336,15 +1327,6 @@ mod tui_tests {
                 rt.handle(),
             );
         }
-        zone_router::tui::input::handle_input_mode(
-            key(KeyCode::Enter),
-            &mut tui,
-            &state,
-            rt.handle(),
-        );
-        assert_eq!(tui.mode, InputMode::EditModelMap);
-
-        // Submit empty input → skip model map and complete
         zone_router::tui::input::handle_input_mode(
             key(KeyCode::Enter),
             &mut tui,
@@ -1722,9 +1704,9 @@ mod tui_tests {
         );
         assert_eq!(tui.mode, InputMode::EditAuthType);
 
-        // Accept auth type (empty = keep current)
+        // Tab to continue to model map editor (opt-in)
         zone_router::tui::input::handle_input_mode(
-            key(KeyCode::Enter),
+            key(KeyCode::Tab),
             &mut tui,
             &state,
             rt.handle(),
@@ -1867,6 +1849,108 @@ mod tui_tests {
         );
 
         assert_eq!(tui.mode, InputMode::Normal);
+        let s = rt.block_on(state.read());
+        assert_eq!(
+            s.config.backends[0]
+                .model_map
+                .as_ref()
+                .unwrap()
+                .opus
+                .as_deref(),
+            Some("o-model")
+        );
+    }
+
+    #[test]
+    fn add_flow_tab_continues_to_model_map() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        // Fast-forward to AddAuthType
+        tui.mode = InputMode::AddAuthType;
+        tui.pending_name = "tab-test".into();
+        tui.pending_url = "http://t".into();
+        tui.pending_token = "tt".into();
+
+        // Tab → should continue to AddModelMap instead of saving
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Tab),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::AddModelMap);
+        // Backend should NOT have been added yet
+        assert_eq!(
+            rt.block_on(state.read()).config.backends.len(),
+            initial_count
+        );
+
+        // Type model map and submit
+        for c in "sonnet=glm-5".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+
+        let s = rt.block_on(state.read());
+        assert_eq!(s.config.backends.len(), initial_count + 1);
+        let added = s.config.backends.last().unwrap();
+        assert_eq!(added.name, "tab-test");
+        assert_eq!(
+            added.model_map.as_ref().unwrap().sonnet.as_deref(),
+            Some("glm-5")
+        );
+    }
+
+    #[test]
+    fn edit_flow_tab_continues_to_model_map() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        // Fast-forward to EditAuthType
+        tui.mode = InputMode::EditAuthType;
+        tui.cursor = 0;
+        tui.pending_name = "a".into();
+        tui.pending_url = "http://a".into();
+        tui.pending_token = "ta".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Tab → should continue to EditModelMap
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Tab),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditModelMap);
+
+        // Submit with model map
+        for c in "opus=o-model".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+
         let s = rt.block_on(state.read());
         assert_eq!(
             s.config.backends[0]

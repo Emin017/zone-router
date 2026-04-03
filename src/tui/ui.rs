@@ -175,7 +175,7 @@ fn draw_help_bar(frame: &mut Frame, tui: &TuiState, state: &AppState, area: Rect
         InputMode::AddUrl => input_prompt("Add backend - URL", &tui.input_buffer),
         InputMode::AddToken => input_prompt("Add backend - Token", &tui.input_buffer),
         InputMode::AddAuthType => input_prompt(
-            "Add backend - Auth type (1=api-key, 2=bearer)",
+            "Auth (1=api-key, 2=bearer) Enter=done, Tab=model map",
             &tui.input_buffer,
         ),
         InputMode::AddModelMap => input_prompt(
@@ -185,9 +185,10 @@ fn draw_help_bar(frame: &mut Frame, tui: &TuiState, state: &AppState, area: Rect
         InputMode::EditName => input_prompt("Edit - Name", &tui.input_buffer),
         InputMode::EditUrl => input_prompt("Edit - URL", &tui.input_buffer),
         InputMode::EditToken => input_prompt("Edit - Token", &tui.input_buffer),
-        InputMode::EditAuthType => {
-            input_prompt("Edit - Auth type (1=api-key, 2=bearer)", &tui.input_buffer)
-        }
+        InputMode::EditAuthType => input_prompt(
+            "Auth (1=api-key, 2=bearer) Enter=done, Tab=model map",
+            &tui.input_buffer,
+        ),
         InputMode::EditModelMap => input_prompt(
             "Edit - Model map (e.g. haiku=x,sonnet=y,opus=z) or Enter to clear",
             &tui.input_buffer,
