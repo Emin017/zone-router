@@ -2502,6 +2502,7 @@ dependencies = [
  "http",
  "http-body-util",
  "hyper",
+ "hyper-util",
  "ratatui",
  "reqwest",
  "serde",

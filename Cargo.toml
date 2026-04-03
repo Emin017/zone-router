@@ -20,15 +20,16 @@ futures-util = "0.3"
 http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 ratatui = "0.29"
 reqwest = { version = "0.12", features = ["stream"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 toml = "0.8"
+tower = { version = "0.5", features = ["util"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 axum = { version = "0.8", features = ["macros"] }
 tempfile = "3"
 tokio-stream = "0.1"
-tower = { version = "0.5", features = ["util"] }
