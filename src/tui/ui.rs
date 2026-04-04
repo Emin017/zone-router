@@ -343,8 +343,13 @@ fn draw_detail_panel(frame: &mut Frame, state: &AppState, tui: &TuiState, log_ar
         return;
     }
 
-    let clamped_cursor = tui.log_cursor.min(log_len.saturating_sub(1));
-    let deque_idx = log_len.saturating_sub(1) - clamped_cursor;
+    let deque_idx = match tui.detail_deque_index {
+        Some(idx) if idx < log_len => idx,
+        _ => {
+            let clamped = tui.log_cursor.min(log_len.saturating_sub(1));
+            log_len.saturating_sub(1) - clamped
+        }
+    };
     let Some(entry) = state.stats.log.get(deque_idx) else {
         return;
     };

@@ -263,9 +263,9 @@ pub async fn proxy_handler(
 
     let (body_bytes, body_changed) = match backend.model_map.as_ref().filter(|mm| mm.has_any()) {
         Some(mm) => {
-            let original_ptr = body_bytes.as_ptr();
+            let original = body_bytes.to_vec();
             let rewritten = rewrite_model(body_bytes, mm);
-            let changed = rewritten.as_ptr() != original_ptr;
+            let changed = rewritten[..] != original[..];
             (rewritten, changed)
         }
         None => (body_bytes, false),

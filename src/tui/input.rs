@@ -84,6 +84,8 @@ pub fn handle_input(
             } else if tui.focus == FocusPanel::RequestLog && log_len > 0 {
                 tui.detail_scroll = 0;
                 tui.body_expanded = false;
+                tui.detail_deque_index =
+                    Some(log_len.saturating_sub(1) - tui.log_cursor.min(log_len.saturating_sub(1)));
                 tui.mode = InputMode::DetailView;
             }
         }
@@ -373,16 +375,22 @@ pub fn handle_input_mode(
                         tui.detail_scroll = tui.detail_scroll.saturating_sub(1);
                     }
                     'n' => {
-                        if log_len > 0 {
-                            tui.log_cursor = (tui.log_cursor + 1).min(log_len.saturating_sub(1));
-                            tui.detail_scroll = 0;
-                            tui.body_expanded = false;
+                        if let Some(idx) = tui.detail_deque_index {
+                            if idx > 0 {
+                                tui.detail_deque_index = Some(idx - 1);
+                                tui.detail_scroll = 0;
+                                tui.body_expanded = false;
+                            }
                         }
                     }
                     'p' => {
-                        tui.log_cursor = tui.log_cursor.saturating_sub(1);
-                        tui.detail_scroll = 0;
-                        tui.body_expanded = false;
+                        if let Some(idx) = tui.detail_deque_index {
+                            if idx + 1 < log_len {
+                                tui.detail_deque_index = Some(idx + 1);
+                                tui.detail_scroll = 0;
+                                tui.body_expanded = false;
+                            }
+                        }
                     }
                     'h' => {
                         tui.mode = InputMode::Normal;

@@ -2495,34 +2495,50 @@ mod tui_tests {
         let (mut tui, state, rt, _dir) = make_tui_with_log();
         tui.mode = InputMode::DetailView;
         tui.log_cursor = 0;
+        // Anchor to deque index 4 (newest entry, 5 entries total)
+        tui.detail_deque_index = Some(4);
 
-        // n moves to next (older) entry
+        // n moves to next older entry (lower deque index)
         zone_router::tui::input::handle_input_mode(
             key(KeyCode::Char('n')),
             &mut tui,
             &state,
             rt.handle(),
         );
-        assert_eq!(tui.log_cursor, 1);
+        assert_eq!(tui.detail_deque_index, Some(3));
         assert_eq!(tui.detail_scroll, 0, "n should reset scroll");
 
-        // p moves to previous (newer) entry
+        // p moves to previous (newer) entry (higher deque index)
         zone_router::tui::input::handle_input_mode(
             key(KeyCode::Char('p')),
             &mut tui,
             &state,
             rt.handle(),
         );
-        assert_eq!(tui.log_cursor, 0);
+        assert_eq!(tui.detail_deque_index, Some(4));
 
-        // p at 0 stays at 0
+        // p at newest stays at newest
         zone_router::tui::input::handle_input_mode(
             key(KeyCode::Char('p')),
             &mut tui,
             &state,
             rt.handle(),
         );
-        assert_eq!(tui.log_cursor, 0);
+        assert_eq!(tui.detail_deque_index, Some(4));
+
+        // n all the way to oldest
+        tui.detail_deque_index = Some(0);
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Char('n')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(
+            tui.detail_deque_index,
+            Some(0),
+            "n at oldest stays at oldest"
+        );
     }
 
     #[test]
