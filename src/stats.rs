@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, VecDeque};
 
-const MAX_LOG_ENTRIES: usize = 1000;
+const MAX_LOG_ENTRIES: usize = 500;
 
 /// Ordered collection of HTTP header name-value pairs.
 #[derive(Debug, Clone, Default)]
@@ -146,11 +146,11 @@ mod tests {
     #[test]
     fn stats_collector_caps_at_max() {
         let mut collector = StatsCollector::default();
-        for i in 0..1100 {
+        for i in 0..700 {
             collector.record(test_entry("test", "POST", "/v1/messages", 200, i));
         }
         assert_eq!(collector.log.len(), MAX_LOG_ENTRIES);
-        assert_eq!(collector.log.front().unwrap().latency_ms, 100);
+        assert_eq!(collector.log.front().unwrap().latency_ms, 200);
     }
 
     #[test]

@@ -177,13 +177,15 @@ impl<S> Drop for SseBufferingStream<S> {
         }
 
         if let Some(tx) = self.done_tx.take() {
-            let body = if self.event_count > MAX_SSE_EVENTS {
+            let byte_capped = self.preview.len() >= MAX_CAPTURED_BODY_BYTES;
+            let body = if self.event_count > MAX_SSE_EVENTS || byte_capped {
                 let text = String::from_utf8_lossy(&self.preview);
-                Some(format!(
-                    "{}\n... (truncated, {} events total)",
-                    text.trim_end(),
-                    self.event_count
-                ))
+                let reason = if self.event_count > MAX_SSE_EVENTS {
+                    format!("{} events total", self.event_count)
+                } else {
+                    format!("{} bytes total", self.preview.len())
+                };
+                Some(format!("{}\n... (truncated, {reason})", text.trim_end(),))
             } else if self.preview.is_empty() {
                 None
             } else {
@@ -259,8 +261,6 @@ pub async fn proxy_handler(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    let req_body = capture_body(&body_bytes);
-
     let (body_bytes, body_changed) = match backend.model_map.as_ref().filter(|mm| mm.has_any()) {
         Some(mm) => {
             let original = body_bytes.to_vec();
@@ -270,6 +270,8 @@ pub async fn proxy_handler(
         }
         None => (body_bytes, false),
     };
+
+    let req_body = capture_body(&body_bytes);
 
     // Strip body-dependent headers only when the payload actually changed;
     // reqwest will recalculate Content-Length from the actual body.
