@@ -118,8 +118,10 @@ fn run_event_loop(
     let rt = tokio::runtime::Handle::current();
 
     loop {
-        let app_state = rt.block_on(state.read()).clone();
-        terminal.draw(|frame| draw(frame, &app_state, tui_state))?;
+        {
+            let app_state = rt.block_on(state.read());
+            terminal.draw(|frame| draw(frame, &app_state, tui_state))?;
+        }
 
         if event::poll(Duration::from_millis(33))? {
             if let Event::Key(key) = event::read()? {

@@ -54,13 +54,35 @@ fn rewrite_model(body: Bytes, mm: &ModelMap) -> (Bytes, bool) {
     let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return (body, false);
     };
-    let Some(model_str) = value.get("model").and_then(|v| v.as_str()) else {
+    let mut changed = false;
+
+    // Top-level model field (single message requests)
+    if let Some(model_str) = value.get("model").and_then(|v| v.as_str()) {
+        if let Some(replacement) = mm.resolve(model_str) {
+            value["model"] = serde_json::Value::String(replacement.to_owned());
+            changed = true;
+        }
+    }
+
+    // Batch requests: requests[*].params.model
+    if let Some(requests) = value.get_mut("requests").and_then(|v| v.as_array_mut()) {
+        for req in requests.iter_mut() {
+            if let Some(model_str) = req
+                .get("params")
+                .and_then(|p| p.get("model"))
+                .and_then(|v| v.as_str())
+            {
+                if let Some(replacement) = mm.resolve(model_str) {
+                    req["params"]["model"] = serde_json::Value::String(replacement.to_owned());
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if !changed {
         return (body, false);
-    };
-    let Some(replacement) = mm.resolve(model_str) else {
-        return (body, false);
-    };
-    value["model"] = serde_json::Value::String(replacement.to_owned());
+    }
     match serde_json::to_vec(&value) {
         Ok(v) => (Bytes::from(v), true),
         Err(_) => (body, false),
