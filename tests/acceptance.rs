@@ -131,6 +131,7 @@ fn config_custom_path_roundtrip() {
             token: "t".into(),
             active: true,
             auth_type: zone_router::config::AuthType::default(),
+            model_map: None,
         }],
     };
     config.save(&path).unwrap();
@@ -314,6 +315,7 @@ async fn shutdown_force_closes_after_timeout() {
             token: "tok".into(),
             active: true,
             auth_type: zone_router::config::AuthType::default(),
+            model_map: None,
         }],
     };
     let app_state =
@@ -571,6 +573,7 @@ async fn port_flag_changes_listen_address() {
             token: "t".into(),
             active: true,
             auth_type: zone_router::config::AuthType::default(),
+            model_map: None,
         }],
     };
     config.save(&config_path).unwrap();
@@ -681,6 +684,7 @@ fn backend_switch_persists_active_state() {
                 token: "ta".into(),
                 active: true,
                 auth_type: zone_router::config::AuthType::default(),
+                model_map: None,
             },
             zone_router::config::Backend {
                 name: "b".into(),
@@ -688,6 +692,7 @@ fn backend_switch_persists_active_state() {
                 token: "tb".into(),
                 active: false,
                 auth_type: zone_router::config::AuthType::default(),
+                model_map: None,
             },
         ],
     };
@@ -703,6 +708,133 @@ fn backend_switch_persists_active_state() {
     assert!(
         loaded.backends[1].active,
         "second backend should be active after switch"
+    );
+}
+
+// --- Model map persistence tests ---
+
+#[test]
+fn add_backend_with_model_map_persists_to_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let config = zone_router::config::Config {
+        proxy: zone_router::config::ProxyConfig {
+            listen: "127.0.0.1:0".into(),
+            local_token: "tok".into(),
+        },
+        backends: vec![],
+    };
+    let mut state = zone_router::state::AppState::new(config, path.clone()).unwrap();
+    state.add_backend(zone_router::config::Backend {
+        name: "mapped".into(),
+        url: "http://m".into(),
+        token: "tm".into(),
+        active: false,
+        auth_type: zone_router::config::AuthType::default(),
+        model_map: Some(zone_router::config::ModelMap {
+            haiku: Some("h-model".into()),
+            sonnet: Some("s-model".into()),
+            opus: None,
+        }),
+    });
+
+    let loaded = zone_router::config::Config::load_or_create(&path).unwrap();
+    let mm = loaded.backends[0]
+        .model_map
+        .as_ref()
+        .expect("model_map should be persisted");
+    assert_eq!(mm.haiku.as_deref(), Some("h-model"));
+    assert_eq!(mm.sonnet.as_deref(), Some("s-model"));
+    assert!(mm.opus.is_none());
+}
+
+#[test]
+fn update_backend_with_model_map_persists_to_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let config = zone_router::config::Config {
+        proxy: zone_router::config::ProxyConfig {
+            listen: "127.0.0.1:0".into(),
+            local_token: "tok".into(),
+        },
+        backends: vec![zone_router::config::Backend {
+            name: "plain".into(),
+            url: "http://p".into(),
+            token: "tp".into(),
+            active: true,
+            auth_type: zone_router::config::AuthType::default(),
+            model_map: None,
+        }],
+    };
+    let mut state = zone_router::state::AppState::new(config, path.clone()).unwrap();
+    state.update_backend(
+        0,
+        "plain".into(),
+        "http://p".into(),
+        "tp".into(),
+        zone_router::config::AuthType::default(),
+        Some(zone_router::config::ModelMap {
+            haiku: None,
+            sonnet: None,
+            opus: Some("o-model".into()),
+        }),
+    );
+
+    let loaded = zone_router::config::Config::load_or_create(&path).unwrap();
+    let mm = loaded.backends[0]
+        .model_map
+        .as_ref()
+        .expect("model_map should be persisted after update");
+    assert!(mm.haiku.is_none());
+    assert!(mm.sonnet.is_none());
+    assert_eq!(mm.opus.as_deref(), Some("o-model"));
+}
+
+#[test]
+fn update_backend_clearing_model_map_removes_section_from_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let config = zone_router::config::Config {
+        proxy: zone_router::config::ProxyConfig {
+            listen: "127.0.0.1:0".into(),
+            local_token: "tok".into(),
+        },
+        backends: vec![zone_router::config::Backend {
+            name: "was-mapped".into(),
+            url: "http://w".into(),
+            token: "tw".into(),
+            active: true,
+            auth_type: zone_router::config::AuthType::default(),
+            model_map: Some(zone_router::config::ModelMap {
+                haiku: Some("h".into()),
+                sonnet: Some("s".into()),
+                opus: Some("o".into()),
+            }),
+        }],
+    };
+    let mut state = zone_router::state::AppState::new(config, path.clone()).unwrap();
+
+    // Clear the model_map
+    state.update_backend(
+        0,
+        "was-mapped".into(),
+        "http://w".into(),
+        "tw".into(),
+        zone_router::config::AuthType::default(),
+        None,
+    );
+
+    let loaded = zone_router::config::Config::load_or_create(&path).unwrap();
+    assert!(
+        loaded.backends[0].model_map.is_none(),
+        "model_map should be None after clearing"
+    );
+
+    // Also verify the raw TOML doesn't contain [backends.model_map]
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        !raw.contains("[backends.model_map]"),
+        "TOML should not contain [backends.model_map] section after clearing, got:\n{raw}"
     );
 }
 
@@ -737,6 +869,7 @@ mod tui_tests {
                     token: "ta".into(),
                     active: true,
                     auth_type: zone_router::config::AuthType::default(),
+                    model_map: None,
                 },
                 zone_router::config::Backend {
                     name: "b".into(),
@@ -744,6 +877,7 @@ mod tui_tests {
                     token: "tb".into(),
                     active: false,
                     auth_type: zone_router::config::AuthType::default(),
+                    model_map: None,
                 },
                 zone_router::config::Backend {
                     name: "c".into(),
@@ -751,6 +885,7 @@ mod tui_tests {
                     token: "tc".into(),
                     active: false,
                     auth_type: zone_router::config::AuthType::default(),
+                    model_map: None,
                 },
             ],
         };
@@ -1381,6 +1516,810 @@ mod tui_tests {
         assert_eq!(
             s.config.backends[0].auth_type, original_auth_type,
             "backend auth type must not change from empty Enter after rejection"
+        );
+    }
+
+    // --- Model map TUI input parsing tests ---
+
+    #[test]
+    fn parse_model_map_valid_full() {
+        let result = zone_router::tui::input::parse_model_map_input(
+            "haiku=glm-4.5-air,sonnet=glm-5-turbo,opus=glm-5.1",
+        );
+        let mm = result.unwrap();
+        assert_eq!(mm.haiku.as_deref(), Some("glm-4.5-air"));
+        assert_eq!(mm.sonnet.as_deref(), Some("glm-5-turbo"));
+        assert_eq!(mm.opus.as_deref(), Some("glm-5.1"));
+    }
+
+    #[test]
+    fn parse_model_map_partial() {
+        let result = zone_router::tui::input::parse_model_map_input("sonnet=glm-5-turbo");
+        let mm = result.unwrap();
+        assert!(mm.haiku.is_none());
+        assert_eq!(mm.sonnet.as_deref(), Some("glm-5-turbo"));
+        assert!(mm.opus.is_none());
+    }
+
+    #[test]
+    fn parse_model_map_empty_returns_none() {
+        assert!(zone_router::tui::input::parse_model_map_input("").is_none());
+        assert!(zone_router::tui::input::parse_model_map_input("  ").is_none());
+    }
+
+    #[test]
+    fn parse_model_map_invalid_key_returns_none() {
+        assert!(zone_router::tui::input::parse_model_map_input("foo=bar").is_none());
+    }
+
+    #[test]
+    fn parse_model_map_invalid_format_returns_none() {
+        assert!(zone_router::tui::input::parse_model_map_input("haiku:x").is_none());
+    }
+
+    #[test]
+    fn add_flow_with_model_map() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        // Fast-forward to AddModelMap
+        tui.mode = InputMode::AddModelMap;
+        tui.pending_name = "mapped".into();
+        tui.pending_url = "http://m".into();
+        tui.pending_token = "tm".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Type model map input
+        for c in "sonnet=glm-5-turbo,opus=glm-5.1".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+
+        let s = rt.block_on(state.read());
+        assert_eq!(s.config.backends.len(), initial_count + 1);
+        let added = s.config.backends.last().unwrap();
+        assert_eq!(added.name, "mapped");
+        let mm = added.model_map.as_ref().unwrap();
+        assert_eq!(mm.sonnet.as_deref(), Some("glm-5-turbo"));
+        assert_eq!(mm.opus.as_deref(), Some("glm-5.1"));
+        assert!(mm.haiku.is_none());
+    }
+
+    #[test]
+    fn add_flow_skip_model_map() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        tui.mode = InputMode::AddModelMap;
+        tui.pending_name = "plain".into();
+        tui.pending_url = "http://p".into();
+        tui.pending_token = "tp".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Press Enter on empty input → skip
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+
+        let s = rt.block_on(state.read());
+        assert_eq!(s.config.backends.len(), initial_count + 1);
+        assert!(s.config.backends.last().unwrap().model_map.is_none());
+    }
+
+    #[test]
+    fn edit_flow_clears_model_map_on_empty() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        // Set a model_map on backend 0
+        {
+            let mut s = rt.block_on(state.write());
+            s.config.backends[0].model_map = Some(zone_router::config::ModelMap {
+                haiku: None,
+                sonnet: Some("s".into()),
+                opus: None,
+            });
+        }
+
+        // Fast-forward to EditModelMap
+        tui.mode = InputMode::EditModelMap;
+        tui.cursor = 0;
+        tui.pending_name = "a".into();
+        tui.pending_url = "http://a".into();
+        tui.pending_token = "ta".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+        tui.input_buffer.clear();
+
+        // Submit empty → clears model_map
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+
+        let s = rt.block_on(state.read());
+        assert!(s.config.backends[0].model_map.is_none());
+    }
+
+    #[test]
+    fn edit_flow_prefills_model_map_input_buffer() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        // Set a model_map on backend 0
+        {
+            let mut s = rt.block_on(state.write());
+            s.config.backends[0].model_map = Some(zone_router::config::ModelMap {
+                haiku: Some("h-model".into()),
+                sonnet: None,
+                opus: Some("o-model".into()),
+            });
+        }
+
+        // Walk through edit flow to reach EditModelMap
+        tui.cursor = 0;
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('e')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditName);
+
+        // Accept name
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        // Accept URL
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        // Accept token
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditAuthType);
+
+        // Tab to continue to model map editor (opt-in)
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Tab),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditModelMap);
+
+        // Verify input_buffer is pre-filled with existing model_map
+        assert!(
+            tui.input_buffer.contains("haiku=h-model"),
+            "should pre-fill haiku mapping, got: {}",
+            tui.input_buffer
+        );
+        assert!(
+            tui.input_buffer.contains("opus=o-model"),
+            "should pre-fill opus mapping, got: {}",
+            tui.input_buffer
+        );
+        assert!(
+            !tui.input_buffer.contains("sonnet"),
+            "should not pre-fill unmapped sonnet, got: {}",
+            tui.input_buffer
+        );
+    }
+
+    #[test]
+    fn add_model_map_invalid_input_stays_in_mode_then_retry_succeeds() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        // Fast-forward to AddModelMap
+        tui.mode = InputMode::AddModelMap;
+        tui.pending_name = "retry".into();
+        tui.pending_url = "http://r".into();
+        tui.pending_token = "tr".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Type invalid input (bad format: colon instead of equals)
+        for c in "haiku:bad".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        // Should stay in AddModelMap mode
+        assert_eq!(tui.mode, InputMode::AddModelMap);
+        // Backend should not have been added
+        assert_eq!(
+            rt.block_on(state.read()).config.backends.len(),
+            initial_count
+        );
+
+        // Now type valid input and retry
+        for c in "sonnet=glm-5".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        assert_eq!(tui.mode, InputMode::Normal);
+        let s = rt.block_on(state.read());
+        assert_eq!(s.config.backends.len(), initial_count + 1);
+        let added = s.config.backends.last().unwrap();
+        assert_eq!(added.name, "retry");
+        assert_eq!(
+            added.model_map.as_ref().unwrap().sonnet.as_deref(),
+            Some("glm-5")
+        );
+    }
+
+    #[test]
+    fn edit_model_map_invalid_input_stays_in_mode_then_retry_succeeds() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        // Fast-forward to EditModelMap
+        tui.mode = InputMode::EditModelMap;
+        tui.cursor = 0;
+        tui.pending_name = "a".into();
+        tui.pending_url = "http://a".into();
+        tui.pending_token = "ta".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        let original_name = rt.block_on(state.read()).config.backends[0].name.clone();
+
+        // Type invalid input (unknown key)
+        for c in "foo=bar".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        // Should stay in EditModelMap mode
+        assert_eq!(tui.mode, InputMode::EditModelMap);
+        // Backend should be unchanged
+        assert_eq!(
+            rt.block_on(state.read()).config.backends[0].name,
+            original_name
+        );
+
+        // Now type valid input and retry
+        for c in "opus=o-model".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+
+        assert_eq!(tui.mode, InputMode::Normal);
+        let s = rt.block_on(state.read());
+        assert_eq!(
+            s.config.backends[0]
+                .model_map
+                .as_ref()
+                .unwrap()
+                .opus
+                .as_deref(),
+            Some("o-model")
+        );
+    }
+
+    #[test]
+    fn add_flow_tab_continues_to_model_map() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        // Fast-forward to AddAuthType
+        tui.mode = InputMode::AddAuthType;
+        tui.pending_name = "tab-test".into();
+        tui.pending_url = "http://t".into();
+        tui.pending_token = "tt".into();
+
+        // Tab → should continue to AddModelMap instead of saving
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Tab),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::AddModelMap);
+        // Backend should NOT have been added yet
+        assert_eq!(
+            rt.block_on(state.read()).config.backends.len(),
+            initial_count
+        );
+
+        // Type model map and submit
+        for c in "sonnet=glm-5".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+
+        let s = rt.block_on(state.read());
+        assert_eq!(s.config.backends.len(), initial_count + 1);
+        let added = s.config.backends.last().unwrap();
+        assert_eq!(added.name, "tab-test");
+        assert_eq!(
+            added.model_map.as_ref().unwrap().sonnet.as_deref(),
+            Some("glm-5")
+        );
+    }
+
+    #[test]
+    fn edit_flow_tab_continues_to_model_map() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        // Fast-forward to EditAuthType
+        tui.mode = InputMode::EditAuthType;
+        tui.cursor = 0;
+        tui.pending_name = "a".into();
+        tui.pending_url = "http://a".into();
+        tui.pending_token = "ta".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Tab → should continue to EditModelMap
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Tab),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditModelMap);
+
+        // Submit with model map
+        for c in "opus=o-model".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+
+        let s = rt.block_on(state.read());
+        assert_eq!(
+            s.config.backends[0]
+                .model_map
+                .as_ref()
+                .unwrap()
+                .opus
+                .as_deref(),
+            Some("o-model")
+        );
+    }
+
+    #[test]
+    fn backend_list_shows_m_marker_when_model_map_present() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let config = zone_router::config::Config {
+            proxy: zone_router::config::ProxyConfig {
+                listen: "127.0.0.1:0".into(),
+                local_token: "tok".into(),
+            },
+            backends: vec![
+                zone_router::config::Backend {
+                    name: "mapped".into(),
+                    url: "http://m".into(),
+                    token: "tm".into(),
+                    active: true,
+                    auth_type: zone_router::config::AuthType::default(),
+                    model_map: Some(zone_router::config::ModelMap {
+                        haiku: None,
+                        sonnet: Some("glm-5-turbo".into()),
+                        opus: None,
+                    }),
+                },
+                zone_router::config::Backend {
+                    name: "plain".into(),
+                    url: "http://p".into(),
+                    token: "tp".into(),
+                    active: false,
+                    auth_type: zone_router::config::AuthType::default(),
+                    model_map: None,
+                },
+            ],
+        };
+        let state = std::sync::Arc::new(tokio::sync::RwLock::new(
+            zone_router::state::AppState::new(config, dir.path().join("m-marker.toml")).unwrap(),
+        ));
+        let app_state = rt.block_on(state.read()).clone();
+        let tui_state = TuiState::default();
+
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| zone_router::tui::ui::draw(frame, &app_state, &tui_state))
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let rendered: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            rendered.contains("[M]"),
+            "backend with model_map should show [M] marker in rendered output"
+        );
+        // "plain" backend should NOT have [M] next to it
+        // Find the line with "plain" and verify no [M] on that line
+        for line in rendered.lines() {
+            if line.contains("plain") {
+                assert!(
+                    !line.contains("[M]"),
+                    "backend without model_map should not show [M], got: {line}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn edit_model_map_empty_enter_after_rejection_preserves_existing() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        // Set a model_map on backend 0
+        {
+            let mut s = rt.block_on(state.write());
+            s.config.backends[0].model_map = Some(zone_router::config::ModelMap {
+                haiku: None,
+                sonnet: Some("existing-model".into()),
+                opus: None,
+            });
+        }
+
+        // Fast-forward to EditModelMap
+        tui.mode = InputMode::EditModelMap;
+        tui.cursor = 0;
+        tui.pending_name = "a".into();
+        tui.pending_url = "http://a".into();
+        tui.pending_token = "ta".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Type invalid input
+        for c in "haiku:bad".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditModelMap);
+
+        // Press Enter again on empty buffer — should NOT wipe model_map
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(
+            tui.mode,
+            InputMode::EditModelMap,
+            "empty Enter after rejection should stay in EditModelMap"
+        );
+
+        // Verify model_map is still intact
+        let s = rt.block_on(state.read());
+        assert_eq!(
+            s.config.backends[0]
+                .model_map
+                .as_ref()
+                .unwrap()
+                .sonnet
+                .as_deref(),
+            Some("existing-model"),
+            "existing model_map should not be wiped by empty Enter after rejection"
+        );
+    }
+
+    #[test]
+    fn add_model_map_empty_enter_after_rejection_stays_in_mode() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        // Fast-forward to AddModelMap
+        tui.mode = InputMode::AddModelMap;
+        tui.pending_name = "post-reject".into();
+        tui.pending_url = "http://pr".into();
+        tui.pending_token = "tpr".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Type invalid input
+        for c in "foo=bar".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::AddModelMap);
+
+        // Press Enter again on empty buffer — should NOT create backend
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(
+            tui.mode,
+            InputMode::AddModelMap,
+            "empty Enter after rejection should stay in AddModelMap"
+        );
+        assert_eq!(
+            rt.block_on(state.read()).config.backends.len(),
+            initial_count,
+            "backend should not be created by empty Enter after rejection"
+        );
+    }
+
+    #[test]
+    fn add_model_map_esc_after_rejection_resets_flag_and_allows_skip() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        // Enter AddModelMap
+        tui.mode = InputMode::AddModelMap;
+        tui.pending_name = "esc-test".into();
+        tui.pending_url = "http://esc".into();
+        tui.pending_token = "tesc".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Type invalid input and trigger rejection
+        for c in "bad:input".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::AddModelMap);
+        assert!(tui.model_map_rejected);
+
+        // Press Esc — should reset to Normal and clear the flag
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Esc),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+        assert!(
+            !tui.model_map_rejected,
+            "Esc should reset model_map_rejected"
+        );
+
+        // Re-enter AddModelMap with same pending fields
+        tui.mode = InputMode::AddModelMap;
+        tui.pending_name = "esc-test".into();
+        tui.pending_url = "http://esc".into();
+        tui.pending_token = "tesc".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Empty Enter should skip model_map (create backend with None)
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(
+            tui.mode,
+            InputMode::Normal,
+            "empty Enter after Esc reset should skip model_map"
+        );
+        assert_eq!(
+            rt.block_on(state.read()).config.backends.len(),
+            initial_count + 1,
+            "backend should be created after Esc reset"
+        );
+        assert!(
+            rt.block_on(state.read())
+                .config
+                .backends
+                .last()
+                .unwrap()
+                .model_map
+                .is_none(),
+            "backend should have model_map: None when skipped"
+        );
+    }
+
+    #[test]
+    fn edit_model_map_esc_after_rejection_resets_flag() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        // Seed a model_map on backend 0
+        {
+            let mut s = rt.block_on(state.write());
+            s.config.backends[0].model_map = Some(zone_router::config::ModelMap {
+                haiku: None,
+                sonnet: Some("keep-me".into()),
+                opus: None,
+            });
+        }
+
+        // Enter EditModelMap
+        tui.mode = InputMode::EditModelMap;
+        tui.cursor = 0;
+        tui.pending_name = "a".into();
+        tui.pending_url = "http://a".into();
+        tui.pending_token = "ta".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Type invalid input and trigger rejection
+        for c in "haiku:bad".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditModelMap);
+        assert!(tui.model_map_rejected);
+
+        // Press Esc — should reset to Normal and clear the flag
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Esc),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+        assert!(
+            !tui.model_map_rejected,
+            "Esc should reset model_map_rejected"
+        );
+
+        // Verify model_map was not touched during rejection/Esc
+        {
+            let s = rt.block_on(state.read());
+            assert_eq!(
+                s.config.backends[0]
+                    .model_map
+                    .as_ref()
+                    .unwrap()
+                    .sonnet
+                    .as_deref(),
+                Some("keep-me"),
+                "model_map should be untouched after Esc"
+            );
+        }
+
+        // Re-enter EditModelMap with empty input_buffer
+        tui.mode = InputMode::EditModelMap;
+        tui.cursor = 0;
+        tui.pending_name = "a".into();
+        tui.pending_url = "http://a".into();
+        tui.pending_token = "ta".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+        tui.input_buffer.clear();
+
+        // Empty Enter should restore normal behavior (clear model_map)
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(
+            tui.mode,
+            InputMode::Normal,
+            "empty Enter after Esc reset should transition to Normal"
+        );
+        assert!(
+            rt.block_on(state.read()).config.backends[0]
+                .model_map
+                .is_none(),
+            "empty Enter after Esc reset should clear model_map"
         );
     }
 }

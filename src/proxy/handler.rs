@@ -1,4 +1,4 @@
-use crate::config::AuthType;
+use crate::config::{AuthType, ModelMap};
 use crate::state::AppState;
 use crate::stats::RequestLogEntry;
 use axum::body::Body;
@@ -75,6 +75,20 @@ fn make_log_entry(
     }
 }
 
+fn rewrite_model(body: Bytes, mm: &ModelMap) -> Bytes {
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return body;
+    };
+    let Some(model_str) = value.get("model").and_then(|v| v.as_str()) else {
+        return body;
+    };
+    let Some(replacement) = mm.resolve(model_str) else {
+        return body;
+    };
+    value["model"] = serde_json::Value::String(replacement.to_owned());
+    serde_json::to_vec(&value).map(Bytes::from).unwrap_or(body)
+}
+
 pub async fn proxy_handler(
     State(state): State<Arc<RwLock<AppState>>>,
     method: Method,
@@ -140,6 +154,28 @@ pub async fn proxy_handler(
     let body_bytes = match axum::body::to_bytes(body, 200 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+
+    let (body_bytes, body_changed) = match backend.model_map.as_ref().filter(|mm| mm.has_any()) {
+        Some(mm) => {
+            let original_ptr = body_bytes.as_ptr();
+            let rewritten = rewrite_model(body_bytes, mm);
+            let changed = rewritten.as_ptr() != original_ptr;
+            (rewritten, changed)
+        }
+        None => (body_bytes, false),
+    };
+
+    // Strip body-dependent headers only when the payload actually changed;
+    // reqwest will recalculate Content-Length from the actual body.
+    let forwarded_headers = if body_changed {
+        let mut h = forwarded_headers;
+        h.remove(reqwest::header::CONTENT_LENGTH);
+        h.remove("content-md5");
+        h.remove("digest");
+        h
+    } else {
+        forwarded_headers
     };
 
     let client = CLIENT.with(|c| c.clone());

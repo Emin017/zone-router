@@ -1,4 +1,4 @@
-use crate::config::{AuthType, Backend, Config, ConfigError};
+use crate::config::{AuthType, Backend, Config, ConfigError, ModelMap};
 use crate::stats::StatsCollector;
 use std::path::PathBuf;
 
@@ -86,12 +86,14 @@ impl AppState {
         url: String,
         token: String,
         auth_type: AuthType,
+        model_map: Option<ModelMap>,
     ) -> bool {
         if let Some(b) = self.config.backends.get_mut(index) {
             b.name = name;
             b.url = url;
             b.token = token;
             b.auth_type = auth_type;
+            b.model_map = model_map;
             let _ = self.persist_config();
             true
         } else {
@@ -116,6 +118,7 @@ mod tests {
             token: token.into(),
             active,
             auth_type: AuthType::default(),
+            model_map: None,
         }
     }
 

@@ -21,10 +21,12 @@ pub enum InputMode {
     AddUrl,
     AddToken,
     AddAuthType,
+    AddModelMap,
     EditName,
     EditUrl,
     EditToken,
     EditAuthType,
+    EditModelMap,
     Search,
     ShowToken,
 }
@@ -57,6 +59,7 @@ pub struct TuiState {
     pub log_scroll: usize,
     pub focus: FocusPanel,
     pub auth_type_rejected: bool,
+    pub model_map_rejected: bool,
     pub pending_auth_type: Option<crate::config::AuthType>,
 }
 
@@ -74,6 +77,7 @@ impl Default for TuiState {
             log_scroll: 0,
             focus: FocusPanel::Backends,
             auth_type_rejected: false,
+            model_map_rejected: false,
             pending_auth_type: None,
         }
     }

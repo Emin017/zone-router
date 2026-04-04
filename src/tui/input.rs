@@ -1,10 +1,32 @@
-use crate::config::{AuthType, Backend};
+use crate::config::{AuthType, Backend, ModelMap};
 use crate::state::AppState;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::app::{FocusPanel, InputMode, TuiState};
+
+/// Resolve auth-type from the input buffer, returning `None` on invalid input.
+/// When input is empty and not previously rejected, returns the provided `default`.
+fn resolve_auth_type(input: &str, default: AuthType, rejected: bool) -> Option<AuthType> {
+    let input_empty = input.trim().is_empty();
+    if input_empty && !rejected {
+        Some(default)
+    } else {
+        AuthType::from_input(input).filter(|_| !input_empty)
+    }
+}
+
+/// Resolve model-map from the input buffer, returning `None` on invalid/rejected input.
+/// When input is empty and not previously rejected, returns `Some(None)` (skip).
+/// Valid input returns `Some(Some(map))`. Invalid or post-rejection empty returns `None`.
+fn resolve_model_map(input: &str, rejected: bool) -> Option<Option<ModelMap>> {
+    match parse_model_map_input(input) {
+        Some(mm) => Some(Some(mm)),
+        None if input.trim().is_empty() && !rejected => Some(None),
+        None => None,
+    }
+}
 
 /// Returns true if the TUI should exit.
 pub fn handle_input(
@@ -125,6 +147,7 @@ pub fn handle_input_mode(
             tui.mode = InputMode::Normal;
             tui.input_buffer.clear();
             tui.auth_type_rejected = false;
+            tui.model_map_rejected = false;
         }
         KeyCode::Enter => match &tui.mode {
             InputMode::AddName => {
@@ -143,14 +166,11 @@ pub fn handle_input_mode(
                 tui.mode = InputMode::AddAuthType;
             }
             InputMode::AddAuthType => {
-                let input_empty = tui.input_buffer.trim().is_empty();
-                let auth_type = if input_empty && !tui.auth_type_rejected {
-                    AuthType::default()
-                } else if let Some(at) =
-                    AuthType::from_input(&tui.input_buffer).filter(|_| !input_empty)
-                {
-                    at
-                } else {
+                let Some(auth_type) = resolve_auth_type(
+                    &tui.input_buffer,
+                    AuthType::default(),
+                    tui.auth_type_rejected,
+                ) else {
                     tui.input_buffer.clear();
                     tui.auth_type_rejected = true;
                     return;
@@ -161,10 +181,33 @@ pub fn handle_input_mode(
                     token: tui.pending_token.clone(),
                     active: false,
                     auth_type,
+                    model_map: None,
                 };
                 rt.block_on(state.write()).add_backend(backend);
                 tui.input_buffer.clear();
                 tui.auth_type_rejected = false;
+                tui.pending_auth_type = None;
+                tui.mode = InputMode::Normal;
+            }
+            InputMode::AddModelMap => {
+                let Some(model_map) = resolve_model_map(&tui.input_buffer, tui.model_map_rejected)
+                else {
+                    tui.input_buffer.clear();
+                    tui.model_map_rejected = true;
+                    return;
+                };
+                let backend = Backend {
+                    name: tui.pending_name.clone(),
+                    url: tui.pending_url.clone(),
+                    token: tui.pending_token.clone(),
+                    active: false,
+                    auth_type: tui.pending_auth_type.unwrap_or_default(),
+                    model_map,
+                };
+                rt.block_on(state.write()).add_backend(backend);
+                tui.input_buffer.clear();
+                tui.pending_auth_type = None;
+                tui.model_map_rejected = false;
                 tui.mode = InputMode::Normal;
             }
             InputMode::EditName => {
@@ -201,16 +244,39 @@ pub fn handle_input_mode(
                 tui.mode = InputMode::EditAuthType;
             }
             InputMode::EditAuthType => {
-                let input_empty = tui.input_buffer.trim().is_empty();
-                let auth_type = if input_empty && !tui.auth_type_rejected {
-                    tui.pending_auth_type.unwrap_or_default()
-                } else if let Some(at) =
-                    AuthType::from_input(&tui.input_buffer).filter(|_| !input_empty)
-                {
-                    at
-                } else {
+                let Some(auth_type) = resolve_auth_type(
+                    &tui.input_buffer,
+                    tui.pending_auth_type.unwrap_or_default(),
+                    tui.auth_type_rejected,
+                ) else {
                     tui.input_buffer.clear();
                     tui.auth_type_rejected = true;
+                    return;
+                };
+                let existing_mm = rt
+                    .block_on(state.read())
+                    .config
+                    .backends
+                    .get(tui.cursor)
+                    .and_then(|b| b.model_map.clone());
+                rt.block_on(state.write()).update_backend(
+                    tui.cursor,
+                    tui.pending_name.clone(),
+                    tui.pending_url.clone(),
+                    tui.pending_token.clone(),
+                    auth_type,
+                    existing_mm,
+                );
+                tui.input_buffer.clear();
+                tui.auth_type_rejected = false;
+                tui.pending_auth_type = None;
+                tui.mode = InputMode::Normal;
+            }
+            InputMode::EditModelMap => {
+                let Some(model_map) = resolve_model_map(&tui.input_buffer, tui.model_map_rejected)
+                else {
+                    tui.input_buffer.clear();
+                    tui.model_map_rejected = true;
                     return;
                 };
                 rt.block_on(state.write()).update_backend(
@@ -218,11 +284,13 @@ pub fn handle_input_mode(
                     tui.pending_name.clone(),
                     tui.pending_url.clone(),
                     tui.pending_token.clone(),
-                    auth_type,
+                    tui.pending_auth_type.unwrap_or_default(),
+                    model_map,
                 );
                 tui.input_buffer.clear();
                 tui.auth_type_rejected = false;
                 tui.pending_auth_type = None;
+                tui.model_map_rejected = false;
                 tui.mode = InputMode::Normal;
             }
             InputMode::Search => {
@@ -246,6 +314,42 @@ pub fn handle_input_mode(
         KeyCode::Backspace => {
             tui.input_buffer.pop();
         }
+        KeyCode::Tab if tui.mode == InputMode::AddAuthType => {
+            let Some(auth_type) = resolve_auth_type(
+                &tui.input_buffer,
+                AuthType::default(),
+                tui.auth_type_rejected,
+            ) else {
+                tui.input_buffer.clear();
+                tui.auth_type_rejected = true;
+                return;
+            };
+            tui.pending_auth_type = Some(auth_type);
+            tui.input_buffer.clear();
+            tui.auth_type_rejected = false;
+            tui.mode = InputMode::AddModelMap;
+        }
+        KeyCode::Tab if tui.mode == InputMode::EditAuthType => {
+            let Some(auth_type) = resolve_auth_type(
+                &tui.input_buffer,
+                tui.pending_auth_type.unwrap_or_default(),
+                tui.auth_type_rejected,
+            ) else {
+                tui.input_buffer.clear();
+                tui.auth_type_rejected = true;
+                return;
+            };
+            tui.pending_auth_type = Some(auth_type);
+            tui.auth_type_rejected = false;
+            tui.input_buffer = format_model_map(
+                rt.block_on(state.read())
+                    .config
+                    .backends
+                    .get(tui.cursor)
+                    .and_then(|b| b.model_map.as_ref()),
+            );
+            tui.mode = InputMode::EditModelMap;
+        }
         KeyCode::Char(c) => {
             if tui.mode == InputMode::ShowToken {
                 tui.mode = InputMode::Normal;
@@ -255,4 +359,46 @@ pub fn handle_input_mode(
         }
         _ => {}
     }
+}
+
+/// Parse comma-separated `key=value` pairs into a `ModelMap`.
+/// Valid keys: haiku, sonnet, opus. Returns `None` on invalid input.
+pub fn parse_model_map_input(input: &str) -> Option<ModelMap> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut mm = ModelMap::default();
+    for pair in trimmed.split(',') {
+        let pair = pair.trim();
+        let (key, value) = pair.split_once('=')?;
+        let key = key.trim();
+        let value = value.trim();
+        if value.is_empty() {
+            return None;
+        }
+        match key {
+            "haiku" => mm.haiku = Some(value.to_string()),
+            "sonnet" => mm.sonnet = Some(value.to_string()),
+            "opus" => mm.opus = Some(value.to_string()),
+            _ => return None,
+        }
+    }
+    if mm.has_any() { Some(mm) } else { None }
+}
+
+/// Format a `ModelMap` as a comma-separated `key=value` string for pre-filling input.
+pub fn format_model_map(mm: Option<&ModelMap>) -> String {
+    let Some(mm) = mm else {
+        return String::new();
+    };
+    [
+        ("haiku", &mm.haiku),
+        ("sonnet", &mm.sonnet),
+        ("opus", &mm.opus),
+    ]
+    .into_iter()
+    .filter_map(|(key, val)| val.as_deref().map(|v| format!("{key}={v}")))
+    .collect::<Vec<_>>()
+    .join(",")
 }

@@ -20,6 +20,7 @@ pub fn make_state(
                 token: token.into(),
                 active: i == 0,
                 auth_type: zone_router::config::AuthType::default(),
+                model_map: None,
             })
             .collect(),
     };
