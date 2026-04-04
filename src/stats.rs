@@ -1,10 +1,9 @@
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 const MAX_LOG_ENTRIES: usize = 500;
-const MAX_BODY_PREVIEW: usize = 4096;
 
 static NEXT_ENTRY_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -56,57 +55,6 @@ impl RequestLogEntry {
             response: Arc::new(response),
         }
     }
-}
-
-/// Truncate a body string to `MAX_BODY_PREVIEW` bytes for storage in log entries.
-/// `original_size` is the real payload size before any upstream truncation.
-/// Preserves any existing trailing truncation marker (e.g. SSE event count)
-/// by checking only the final line, not body content.
-pub fn truncate_body_for_log(body: Option<String>, original_size: usize) -> Option<String> {
-    body.map(|s| {
-        // Check if the string ends with a truncation marker on its last line.
-        // Only match the very last line to avoid false positives in body content.
-        let existing_marker = s
-            .rfind('\n')
-            .and_then(|pos| {
-                let last_line = &s[pos..];
-                if last_line.contains("(truncated,") {
-                    Some(last_line.to_owned())
-                } else {
-                    None
-                }
-            })
-            .or_else(|| {
-                // Single-line string that is itself a truncation marker
-                if s.starts_with("...(truncated,") || s.starts_with("... (truncated,") {
-                    Some(s.clone())
-                } else {
-                    None
-                }
-            });
-
-        if s.len() <= MAX_BODY_PREVIEW {
-            if original_size > s.len() && existing_marker.is_none() {
-                format!("{s}\n...(truncated, {original_size} bytes total)")
-            } else {
-                s
-            }
-        } else if let Some(marker) = existing_marker {
-            // Re-truncate but preserve the existing marker (e.g. "N events total")
-            let budget = MAX_BODY_PREVIEW.saturating_sub(marker.len());
-            let mut end = budget;
-            while end > 0 && !s.is_char_boundary(end) {
-                end -= 1;
-            }
-            format!("{}{}", &s[..end], marker)
-        } else {
-            let mut end = MAX_BODY_PREVIEW;
-            while end > 0 && !s.is_char_boundary(end) {
-                end -= 1;
-            }
-            format!("{}...(truncated, {} bytes total)", &s[..end], original_size)
-        }
-    })
 }
 
 #[derive(Debug, Clone, Default)]
