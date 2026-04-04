@@ -93,13 +93,11 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let poll = Pin::new(&mut self.inner).poll_next(cx);
         if let Poll::Ready(Some(Ok(ref chunk))) = poll {
+            let text = std::str::from_utf8(chunk).unwrap_or("");
             if self.event_count < MAX_SSE_EVENTS {
-                if let Ok(text) = std::str::from_utf8(chunk) {
-                    self.buffer.push_str(text);
-                }
+                self.buffer.push_str(text);
             }
-            let chunk_str = std::str::from_utf8(chunk).unwrap_or("");
-            self.event_count += chunk_str.matches("data:").count();
+            self.event_count += text.matches("data:").count();
         }
         poll.map(|opt| opt.map(|r| r.map_err(std::io::Error::other)))
     }
@@ -242,17 +240,7 @@ pub async fn proxy_handler(
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|ct| ct.contains("text/event-stream"));
 
-            let resp_headers = HeaderPairs(
-                resp.headers()
-                    .iter()
-                    .filter_map(|(name, value)| {
-                        value
-                            .to_str()
-                            .ok()
-                            .map(|v| (name.as_str().to_owned(), v.to_owned()))
-                    })
-                    .collect(),
-            );
+            let resp_headers = extract_header_pairs(resp.headers());
 
             let response_headers: HeaderMap = resp
                 .headers()
