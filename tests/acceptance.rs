@@ -1,8 +1,8 @@
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::routing::post;
-use axum::Router;
 use futures_util::stream;
 use std::sync::Arc;
 use std::time::Duration;
@@ -2144,6 +2144,152 @@ mod tui_tests {
             rt.block_on(state.read()).config.backends.len(),
             initial_count,
             "backend should not be created by empty Enter after rejection"
+        );
+    }
+
+    #[test]
+    fn add_model_map_esc_after_rejection_resets_flag_and_allows_skip() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        // Enter AddModelMap
+        tui.mode = InputMode::AddModelMap;
+        tui.pending_name = "esc-test".into();
+        tui.pending_url = "http://esc".into();
+        tui.pending_token = "tesc".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Type invalid input and trigger rejection
+        for c in "bad:input".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::AddModelMap);
+        assert!(tui.model_map_rejected);
+
+        // Press Esc — should reset to Normal and clear the flag
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Esc),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+        assert!(
+            !tui.model_map_rejected,
+            "Esc should reset model_map_rejected"
+        );
+
+        // Re-enter AddModelMap with same pending fields
+        tui.mode = InputMode::AddModelMap;
+        tui.pending_name = "esc-test".into();
+        tui.pending_url = "http://esc".into();
+        tui.pending_token = "tesc".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Empty Enter should skip model_map (create backend with None)
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(
+            tui.mode,
+            InputMode::Normal,
+            "empty Enter after Esc reset should skip model_map"
+        );
+        assert_eq!(
+            rt.block_on(state.read()).config.backends.len(),
+            initial_count + 1,
+            "backend should be created after Esc reset"
+        );
+        assert!(
+            rt.block_on(state.read())
+                .config
+                .backends
+                .last()
+                .unwrap()
+                .model_map
+                .is_none(),
+            "backend should have model_map: None when skipped"
+        );
+    }
+
+    #[test]
+    fn edit_model_map_esc_after_rejection_resets_flag() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        // Seed a model_map on backend 0
+        {
+            let mut s = rt.block_on(state.write());
+            s.config.backends[0].model_map = Some(zone_router::config::ModelMap {
+                haiku: None,
+                sonnet: Some("keep-me".into()),
+                opus: None,
+            });
+        }
+
+        // Enter EditModelMap
+        tui.mode = InputMode::EditModelMap;
+        tui.cursor = 0;
+        tui.pending_name = "a".into();
+        tui.pending_url = "http://a".into();
+        tui.pending_token = "ta".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Type invalid input and trigger rejection
+        for c in "haiku:bad".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditModelMap);
+        assert!(tui.model_map_rejected);
+
+        // Press Esc — should reset to Normal and clear the flag
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Esc),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+        assert!(
+            !tui.model_map_rejected,
+            "Esc should reset model_map_rejected"
+        );
+
+        // Verify model_map was not touched
+        let s = rt.block_on(state.read());
+        assert_eq!(
+            s.config.backends[0]
+                .model_map
+                .as_ref()
+                .unwrap()
+                .sonnet
+                .as_deref(),
+            Some("keep-me"),
+            "model_map should be untouched after Esc"
         );
     }
 }
