@@ -1,8 +1,8 @@
-use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::sse::{Event, Sse};
-use axum::routing::post;
+use axum::routing::{get, post};
+use axum::Router;
 use futures_util::stream;
 use tower::ServiceExt;
 
@@ -173,11 +173,9 @@ async fn headers_pass_through() {
     let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
         .await
         .unwrap();
-    assert!(
-        String::from_utf8(body.to_vec())
-            .unwrap()
-            .contains("version=2024-01-01")
-    );
+    assert!(String::from_utf8(body.to_vec())
+        .unwrap()
+        .contains("version=2024-01-01"));
 }
 
 #[tokio::test]
@@ -873,5 +871,224 @@ async fn model_map_rewrites_body_for_sse_response() {
     assert!(
         body_str.contains("model=glm-5-turbo"),
         "SSE backend should receive rewritten model, got: {body_str}"
+    );
+}
+
+// --- Captured request/response data tests ---
+
+#[tokio::test]
+async fn captures_post_request_headers_and_body() {
+    let (backend_url, _handle) = start_mock_backend().await;
+    let state = make_state(vec![("cap", &backend_url, "tok")], "secret");
+    let router = zone_router::proxy::server::build_router(state.clone());
+
+    let _resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let s = state.read().await;
+    assert_eq!(s.stats.log.len(), 1);
+    let entry = &s.stats.log[0];
+    assert!(
+        !entry.request.headers.0.is_empty(),
+        "request headers should be non-empty"
+    );
+    assert!(
+        entry.request.body.is_some(),
+        "POST request body should be Some"
+    );
+    assert!(
+        entry.request.body.as_deref().unwrap().contains("model"),
+        "request body should contain the sent JSON"
+    );
+}
+
+#[tokio::test]
+async fn captures_get_request_with_no_body() {
+    let app = Router::new().route("/v1/models", get(|| async { "ok" }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let state = make_state(
+        vec![("get-test", &format!("http://{addr}"), "tok")],
+        "secret",
+    );
+    let router = zone_router::proxy::server::build_router(state.clone());
+
+    let _resp = router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/models")
+                .header("x-api-key", "secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let s = state.read().await;
+    assert_eq!(s.stats.log.len(), 1);
+    let entry = &s.stats.log[0];
+    assert!(
+        entry.request.body.is_none(),
+        "GET with no body should have request.body=None"
+    );
+}
+
+#[tokio::test]
+async fn captures_response_headers_and_body() {
+    let (backend_url, _handle) = start_mock_backend().await;
+    let state = make_state(vec![("resp-test", &backend_url, "tok")], "secret");
+    let router = zone_router::proxy::server::build_router(state.clone());
+
+    let _resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .body(Body::from("hello"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let s = state.read().await;
+    assert_eq!(s.stats.log.len(), 1);
+    let entry = &s.stats.log[0];
+    assert!(
+        !entry.response.headers.0.is_empty(),
+        "response headers should be captured"
+    );
+    assert!(
+        entry.response.body.is_some(),
+        "response body should be captured for non-SSE responses"
+    );
+}
+
+// --- SSE preview truncation tests ---
+
+async fn start_sse_backend(event_count: usize) -> (String, tokio::task::JoinHandle<()>) {
+    let app = Router::new().route(
+        "/v1/messages",
+        post(move |_body: String| async move {
+            let events: Vec<_> = (0..event_count)
+                .map(|i| {
+                    Ok::<_, std::convert::Infallible>(Event::default().data(format!("event-{i}")))
+                })
+                .collect();
+            Sse::new(stream::iter(events))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), handle)
+}
+
+#[tokio::test]
+async fn sse_under_20_events_captures_all() {
+    let (backend_url, _handle) = start_sse_backend(5).await;
+    let state = make_state(vec![("sse5", &backend_url, "tok")], "secret");
+    let router = zone_router::proxy::server::build_router(state.clone());
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Consume the full SSE stream so LogOnDrop fires
+    let _body = axum::body::to_bytes(resp.into_body(), 10 * 1024 * 1024)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let s = state.read().await;
+    assert_eq!(s.stats.log.len(), 1);
+    let entry = &s.stats.log[0];
+    let body = entry.response.body.as_deref().unwrap();
+    assert!(
+        body.contains("event-0"),
+        "should contain first event, got: {body}"
+    );
+    assert!(
+        body.contains("event-4"),
+        "should contain last event, got: {body}"
+    );
+    assert!(
+        !body.contains("truncated"),
+        "<=20 events should not have truncation marker, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn sse_over_20_events_truncates_with_marker() {
+    let (backend_url, _handle) = start_sse_backend(30).await;
+    let state = make_state(vec![("sse30", &backend_url, "tok")], "secret");
+    let router = zone_router::proxy::server::build_router(state.clone());
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let _body = axum::body::to_bytes(resp.into_body(), 10 * 1024 * 1024)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let s = state.read().await;
+    assert_eq!(s.stats.log.len(), 1);
+    let entry = &s.stats.log[0];
+    let body = entry.response.body.as_deref().unwrap();
+    assert!(
+        body.contains("event-0"),
+        "should contain first event, got: {body}"
+    );
+    assert!(
+        body.contains("truncated"),
+        ">20 events should have truncation marker, got: {body}"
+    );
+    assert!(
+        body.contains("30 events total"),
+        "should report total event count, got: {body}"
+    );
+    // Events beyond 20 should NOT be in the buffer
+    assert!(
+        !body.contains("event-25"),
+        "should not contain events beyond the 20th, got: {body}"
     );
 }

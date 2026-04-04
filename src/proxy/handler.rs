@@ -94,10 +94,27 @@ where
         let poll = Pin::new(&mut self.inner).poll_next(cx);
         if let Poll::Ready(Some(Ok(ref chunk))) = poll {
             let text = std::str::from_utf8(chunk).unwrap_or("");
-            if self.event_count < MAX_SSE_EVENTS {
-                self.buffer.push_str(text);
+            // Scan for "data:" markers and only buffer content belonging
+            // to the first MAX_SSE_EVENTS events.
+            let mut remaining = text;
+            while !remaining.is_empty() {
+                if let Some(pos) = remaining.find("data:") {
+                    // Everything before and including this "data:" marker
+                    let event_start = pos + "data:".len();
+                    if self.event_count < MAX_SSE_EVENTS {
+                        self.buffer.push_str(&remaining[..event_start]);
+                    }
+                    self.event_count += 1;
+                    remaining = &remaining[event_start..];
+                } else {
+                    // No more markers in this chunk — buffer trailing text
+                    // only if we're still under the cap
+                    if self.event_count <= MAX_SSE_EVENTS {
+                        self.buffer.push_str(remaining);
+                    }
+                    break;
+                }
             }
-            self.event_count += text.matches("data:").count();
         }
         poll.map(|opt| opt.map(|r| r.map_err(std::io::Error::other)))
     }

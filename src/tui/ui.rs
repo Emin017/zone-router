@@ -1,10 +1,10 @@
 use crate::state::AppState;
 use crate::stats::RequestLogEntry;
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::Frame;
 
 use super::app::{FocusPanel, InputMode, TuiState};
 
@@ -200,7 +200,36 @@ fn centered_rect(area: Rect, width_pct: u16, height_pct: u16) -> Rect {
     Rect::new(x, y, w, h)
 }
 
-fn build_detail_lines(entry: &RequestLogEntry, body_expanded: bool) -> Vec<Line<'static>> {
+fn wrap_text_lines(text: &str, prefix: &str, max_width: usize) -> Vec<Line<'static>> {
+    let usable = max_width.saturating_sub(prefix.len());
+    if usable == 0 {
+        return vec![Line::from(format!("{prefix}{text}"))];
+    }
+    let mut result = Vec::new();
+    for line in text.lines() {
+        if line.len() <= usable {
+            result.push(Line::from(format!("{prefix}{line}")));
+        } else {
+            let mut pos = 0;
+            while pos < line.len() {
+                let end = (pos + usable).min(line.len());
+                let chunk = &line[pos..end];
+                result.push(Line::from(format!("{prefix}{chunk}")));
+                pos = end;
+            }
+        }
+    }
+    if result.is_empty() {
+        result.push(Line::from(prefix.to_string()));
+    }
+    result
+}
+
+fn build_detail_lines(
+    entry: &RequestLogEntry,
+    body_expanded: bool,
+    inner_width: usize,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     lines.push(Line::from(format!(
@@ -230,7 +259,11 @@ fn build_detail_lines(entry: &RequestLogEntry, body_expanded: bool) -> Vec<Line<
         Style::default().fg(Color::DarkGray),
     ));
     for (name, value) in &entry.request.headers.0 {
-        lines.push(Line::from(format!(" {name}: {value}")));
+        lines.extend(wrap_text_lines(
+            &format!("{name}: {value}"),
+            " ",
+            inner_width,
+        ));
     }
     if entry.request.headers.0.is_empty() {
         lines.push(Line::from(" (none)"));
@@ -250,9 +283,7 @@ fn build_detail_lines(entry: &RequestLogEntry, body_expanded: bool) -> Vec<Line<
                 " ▾ Request Body",
                 Style::default().add_modifier(Modifier::BOLD),
             ));
-            for line in body.lines() {
-                lines.push(Line::from(format!(" {line}")));
-            }
+            lines.extend(wrap_text_lines(body, " ", inner_width));
         }
         (None, _) => {
             lines.push(Line::from(" ▸ Request Body (empty)"));
@@ -266,7 +297,11 @@ fn build_detail_lines(entry: &RequestLogEntry, body_expanded: bool) -> Vec<Line<
         Style::default().fg(Color::DarkGray),
     ));
     for (name, value) in &entry.response.headers.0 {
-        lines.push(Line::from(format!(" {name}: {value}")));
+        lines.extend(wrap_text_lines(
+            &format!("{name}: {value}"),
+            " ",
+            inner_width,
+        ));
     }
     if entry.response.headers.0.is_empty() {
         lines.push(Line::from(" (none)"));
@@ -280,9 +315,7 @@ fn build_detail_lines(entry: &RequestLogEntry, body_expanded: bool) -> Vec<Line<
     ));
     match &entry.response.body {
         Some(body) => {
-            for line in body.lines() {
-                lines.push(Line::from(format!(" {line}")));
-            }
+            lines.extend(wrap_text_lines(body, " ", inner_width));
         }
         None => {
             lines.push(Line::from(" (empty)"));
@@ -305,8 +338,9 @@ fn draw_detail_panel(frame: &mut Frame, state: &AppState, tui: &TuiState, log_ar
     };
 
     let panel_area = centered_rect(log_area, 80, 90);
+    let inner_width = panel_area.width.saturating_sub(2) as usize;
 
-    let lines = build_detail_lines(entry, tui.body_expanded);
+    let lines = build_detail_lines(entry, tui.body_expanded, inner_width);
     let max_scroll = lines
         .len()
         .saturating_sub(panel_area.height.saturating_sub(2) as usize);
@@ -319,8 +353,7 @@ fn draw_detail_panel(frame: &mut Frame, state: &AppState, tui: &TuiState, log_ar
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .scroll((scroll as u16, 0))
-        .wrap(Wrap { trim: false });
+        .scroll((scroll as u16, 0));
 
     frame.render_widget(Clear, panel_area);
     frame.render_widget(paragraph, panel_area);

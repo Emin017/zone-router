@@ -1,8 +1,8 @@
-use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::routing::post;
+use axum::Router;
 use futures_util::stream;
 use std::sync::Arc;
 use std::time::Duration;
@@ -2321,5 +2321,256 @@ mod tui_tests {
                 .is_none(),
             "empty Enter after Esc reset should clear model_map"
         );
+    }
+
+    // --- Request Log cursor and DetailView tests ---
+
+    fn make_tui_with_log() -> (
+        TuiState,
+        std::sync::Arc<tokio::sync::RwLock<zone_router::state::AppState>>,
+        tokio::runtime::Runtime,
+        tempfile::TempDir,
+    ) {
+        let (mut tui, state, rt, dir) = make_tui_and_state();
+        // Add some log entries
+        {
+            let mut s = rt.block_on(state.write());
+            for i in 0..5 {
+                s.stats.record(zone_router::stats::RequestLogEntry {
+                    timestamp: chrono::Utc::now(),
+                    backend: "test".into(),
+                    latency_ms: i * 10,
+                    request: zone_router::stats::CapturedRequest {
+                        method: "POST".into(),
+                        path: "/v1/messages".into(),
+                        headers: zone_router::stats::HeaderPairs::default(),
+                        body: Some(format!("body-{i}")),
+                    },
+                    response: zone_router::stats::CapturedResponse {
+                        status: 200,
+                        headers: zone_router::stats::HeaderPairs::default(),
+                        body: Some(format!("resp-{i}")),
+                    },
+                });
+            }
+        }
+        tui.focus = FocusPanel::RequestLog;
+        (tui, state, rt, dir)
+    }
+
+    #[test]
+    fn log_cursor_j_k_moves_within_bounds() {
+        let (mut tui, state, rt, _dir) = make_tui_with_log();
+        assert_eq!(tui.log_cursor, 0);
+
+        // j moves cursor down
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('j')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.log_cursor, 1);
+
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('j')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.log_cursor, 2);
+
+        // k moves cursor up
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('k')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.log_cursor, 1);
+
+        // k at 0 stays at 0
+        tui.log_cursor = 0;
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('k')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.log_cursor, 0);
+
+        // j at end stays at end
+        tui.log_cursor = 4;
+        zone_router::tui::input::handle_input(
+            key(KeyCode::Char('j')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.log_cursor, 4);
+    }
+
+    #[test]
+    fn enter_opens_detail_view_from_request_log() {
+        let (mut tui, state, rt, _dir) = make_tui_with_log();
+        assert_eq!(tui.mode, InputMode::Normal);
+
+        // Enter on RequestLog focus opens DetailView
+        zone_router::tui::input::handle_input(key(KeyCode::Enter), &mut tui, &state, rt.handle());
+        assert_eq!(tui.mode, InputMode::DetailView);
+        assert_eq!(tui.detail_scroll, 0);
+        assert!(!tui.body_expanded);
+    }
+
+    #[test]
+    fn enter_on_backends_does_not_open_detail_view() {
+        let (mut tui, state, rt, _dir) = make_tui_with_log();
+        tui.focus = FocusPanel::Backends;
+
+        zone_router::tui::input::handle_input(key(KeyCode::Enter), &mut tui, &state, rt.handle());
+        assert_ne!(
+            tui.mode,
+            InputMode::DetailView,
+            "Enter on Backends should not open DetailView"
+        );
+    }
+
+    #[test]
+    fn detail_view_j_k_scrolls() {
+        let (mut tui, state, rt, _dir) = make_tui_with_log();
+        tui.mode = InputMode::DetailView;
+        assert_eq!(tui.detail_scroll, 0);
+
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Char('j')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.detail_scroll, 1);
+
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Char('k')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.detail_scroll, 0);
+
+        // k at 0 stays at 0
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Char('k')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.detail_scroll, 0);
+    }
+
+    #[test]
+    fn detail_view_enter_toggles_body() {
+        let (mut tui, state, rt, _dir) = make_tui_with_log();
+        tui.mode = InputMode::DetailView;
+        assert!(!tui.body_expanded);
+
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert!(tui.body_expanded);
+
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert!(!tui.body_expanded);
+    }
+
+    #[test]
+    fn detail_view_n_p_cycles_entries() {
+        let (mut tui, state, rt, _dir) = make_tui_with_log();
+        tui.mode = InputMode::DetailView;
+        tui.log_cursor = 0;
+
+        // n moves to next (older) entry
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Char('n')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.log_cursor, 1);
+        assert_eq!(tui.detail_scroll, 0, "n should reset scroll");
+
+        // p moves to previous (newer) entry
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Char('p')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.log_cursor, 0);
+
+        // p at 0 stays at 0
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Char('p')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.log_cursor, 0);
+    }
+
+    #[test]
+    fn detail_view_esc_closes_panel() {
+        let (mut tui, state, rt, _dir) = make_tui_with_log();
+        tui.mode = InputMode::DetailView;
+
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Esc),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn detail_view_h_closes_panel() {
+        let (mut tui, state, rt, _dir) = make_tui_with_log();
+        tui.mode = InputMode::DetailView;
+
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Char('h')),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn detail_view_blocks_normal_mode_keys() {
+        let (mut tui, state, rt, _dir) = make_tui_with_log();
+        tui.mode = InputMode::DetailView;
+
+        // Normal mode keys should have no effect in DetailView
+        for c in ['a', 'd', 'e', 't', 'q', '1', '2'] {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+            assert_eq!(
+                tui.mode,
+                InputMode::DetailView,
+                "key '{c}' should not change mode in DetailView"
+            );
+        }
     }
 }
