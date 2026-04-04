@@ -51,6 +51,15 @@ fn make_log_entry(
 }
 
 fn rewrite_model(body: Bytes, mm: &ModelMap) -> (Bytes, bool) {
+    // Quick scan: only parse full JSON if body contains a plausible "model" key.
+    // This avoids deserializing large payloads (up to 200MB) that don't need rewriting.
+    if body.len() > 512 * 1024
+        || !body
+            .windows(8)
+            .any(|w| w == b"\"model\":" || w == b"\"model\" ")
+    {
+        return (body, false);
+    }
     let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return (body, false);
     };
@@ -143,6 +152,9 @@ struct SseBufferingStream<S> {
     /// Set when carry was flushed due to overflow, so the next delimiter
     /// still counts the oversized frame as one data event.
     carry_flushed_data: bool,
+    /// Small tail buffer for cross-chunk delimiter detection after done_buffering.
+    /// Retains at most 3 trailing bytes (\r\n\r is the longest partial delimiter).
+    tail: Vec<u8>,
 }
 
 /// Returns true if the SSE frame contains a `data:` field line,
@@ -178,15 +190,20 @@ where
 
             if done_buffering {
                 // Still need to count data events for the truncation marker,
-                // but don't grow carry unboundedly.
-                let mut temp_carry = Vec::new();
-                temp_carry.extend_from_slice(chunk);
-                while let Some(delim_end) = find_blank_line(&temp_carry) {
-                    let frame = &temp_carry[..delim_end];
+                // but don't grow carry unboundedly. Use self.tail to carry
+                // partial delimiters across chunk boundaries.
+                self.tail.extend_from_slice(chunk);
+                while let Some(delim_end) = find_blank_line(&self.tail) {
+                    let frame = &self.tail[..delim_end];
                     if is_data_event(frame) {
                         self.event_count += 1;
                     }
-                    temp_carry = temp_carry[delim_end..].to_vec();
+                    self.tail = self.tail[delim_end..].to_vec();
+                }
+                // Keep only the last 3 bytes for cross-chunk delimiter matching
+                if self.tail.len() > 3 {
+                    let start = self.tail.len() - 3;
+                    self.tail = self.tail[start..].to_vec();
                 }
             } else {
                 self.carry.extend_from_slice(chunk);
@@ -412,6 +429,7 @@ pub async fn proxy_handler(
                     carry: Vec::new(),
                     event_count: 0,
                     carry_flushed_data: false,
+                    tail: Vec::new(),
                 };
                 let body = Body::from_stream(wrapped);
 
