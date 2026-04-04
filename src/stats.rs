@@ -58,26 +58,10 @@ impl RequestLogEntry {
 }
 
 /// Truncate a body string to `MAX_BODY_PREVIEW` bytes for storage in log entries.
-/// Preserves existing truncation markers from upstream capture so the original
-/// byte count is not replaced with the intermediate string length.
 pub fn truncate_body_for_log(body: Option<String>) -> Option<String> {
     body.map(|s| {
         if s.len() <= MAX_BODY_PREVIEW {
             s
-        } else if s.contains("... (truncated,") || s.contains("...(truncated,") {
-            // Already has a truncation marker from capture_body — keep the
-            // original total but trim the preview portion to fit.
-            let marker_pos = s
-                .rfind("... (truncated,")
-                .or_else(|| s.rfind("...(truncated,"))
-                .unwrap();
-            let marker = &s[marker_pos..];
-            let budget = MAX_BODY_PREVIEW.saturating_sub(marker.len());
-            let mut end = budget.min(marker_pos);
-            while end > 0 && !s.is_char_boundary(end) {
-                end -= 1;
-            }
-            format!("{}{}", &s[..end], marker)
         } else {
             let mut end = MAX_BODY_PREVIEW;
             while end > 0 && !s.is_char_boundary(end) {

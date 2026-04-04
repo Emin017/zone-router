@@ -53,10 +53,11 @@ pub fn handle_input(
                 }
             }
             FocusPanel::RequestLog => {
-                if log_len > 0 {
-                    tui.log_cursor = (tui.log_cursor + 1).min(log_len.saturating_sub(1));
-                    let s = rt.block_on(state.read());
-                    let deque_idx = log_len.saturating_sub(1) - tui.log_cursor;
+                let s = rt.block_on(state.read());
+                let len = s.stats.log.len();
+                if len > 0 {
+                    tui.log_cursor = (tui.log_cursor + 1).min(len.saturating_sub(1));
+                    let deque_idx = len.saturating_sub(1) - tui.log_cursor;
                     tui.log_cursor_id = s.stats.log.get(deque_idx).map(|e| e.id);
                 }
             }
@@ -68,9 +69,12 @@ pub fn handle_input(
             FocusPanel::RequestLog => {
                 tui.log_cursor = tui.log_cursor.saturating_sub(1);
                 let s = rt.block_on(state.read());
-                let deque_idx = s.stats.log.len().saturating_sub(1)
-                    - tui.log_cursor.min(s.stats.log.len().saturating_sub(1));
-                tui.log_cursor_id = s.stats.log.get(deque_idx).map(|e| e.id);
+                let len = s.stats.log.len();
+                if len > 0 {
+                    let deque_idx =
+                        len.saturating_sub(1) - tui.log_cursor.min(len.saturating_sub(1));
+                    tui.log_cursor_id = s.stats.log.get(deque_idx).map(|e| e.id);
+                }
             }
         },
         KeyCode::Char('G') => {
@@ -91,11 +95,16 @@ pub fn handle_input(
             } else if tui.focus == FocusPanel::RequestLog && log_len > 0 {
                 tui.detail_scroll = 0;
                 tui.body_expanded = false;
-                let deque_idx =
-                    log_len.saturating_sub(1) - tui.log_cursor.min(log_len.saturating_sub(1));
-                let s = rt.block_on(state.read());
-                tui.detail_entry_id = s.stats.log.get(deque_idx).map(|e| e.id);
-                drop(s);
+                // Use the stable cursor ID if available, otherwise resolve from a fresh snapshot
+                tui.detail_entry_id = tui.log_cursor_id.or_else(|| {
+                    let s = rt.block_on(state.read());
+                    let len = s.stats.log.len();
+                    if len == 0 {
+                        return None;
+                    }
+                    let idx = len.saturating_sub(1) - tui.log_cursor.min(len.saturating_sub(1));
+                    s.stats.log.get(idx).map(|e| e.id)
+                });
                 tui.mode = InputMode::DetailView;
             }
         }
