@@ -2708,6 +2708,10 @@ mod tui_tests {
 
         // Panel content sections
         assert!(
+            output.contains("Timestamp:"),
+            "panel should display Timestamp field"
+        );
+        assert!(
             output.contains("Backend:"),
             "panel should display Backend field"
         );
@@ -2922,6 +2926,170 @@ mod tui_tests {
         assert!(
             output.contains("Request Detail"),
             "panel should render with non-ASCII content"
+        );
+    }
+
+    #[test]
+    fn render_popup_geometry_is_centered_in_log_area() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state_arc = make_app_state_with_log(&dir);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let state = rt.block_on(state_arc.read()).clone();
+        let tui = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::DetailView,
+            log_cursor: 0,
+            ..TuiState::default()
+        };
+
+        let width: u16 = 100;
+        let height: u16 = 50;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| zone_router::tui::ui::draw(frame, &state, &tui))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        // Find the popup by scanning cell symbols directly for border corners.
+        let mut panel_title_y = None;
+        let mut panel_left: Option<u16> = None;
+        let mut panel_right: Option<u16> = None;
+        for y in 0..buffer.area.height {
+            let mut row = String::new();
+            for x in 0..buffer.area.width {
+                row.push_str(buffer[(x, y)].symbol());
+            }
+            if row.contains("Request Detail") {
+                panel_title_y = Some(y);
+                for x in 0..buffer.area.width {
+                    let sym = buffer[(x, y)].symbol();
+                    if sym == "┌" || sym == "╭" {
+                        panel_left = Some(x);
+                    }
+                    if sym == "┐" || sym == "╮" {
+                        panel_right = Some(x);
+                    }
+                }
+                break;
+            }
+        }
+
+        let panel_y = panel_title_y.expect("panel title should be found in buffer");
+
+        // Panel should be inside the log area, not at the top of the frame
+        assert!(
+            panel_y > 5,
+            "panel top edge should be below status+main area, got y={panel_y}"
+        );
+
+        // Verify panel width and centering using cell coordinates
+        let left = panel_left.expect("left border should be found");
+        let right = panel_right.expect("right border should be found");
+        let panel_width = right - left + 1;
+        assert!(
+            panel_width >= 60,
+            "panel should be at least 60 cols wide (~80% of 100), got {panel_width}"
+        );
+        let left_margin = left as i32;
+        let right_margin = (width - right - 1) as i32;
+        let margin_diff = (left_margin - right_margin).unsigned_abs();
+        assert!(
+            margin_diff <= 5,
+            "panel should be roughly centered, left_margin={left_margin}, right_margin={right_margin}"
+        );
+    }
+
+    #[test]
+    fn render_scroll_reachability_for_long_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = zone_router::config::Config {
+            proxy: zone_router::config::ProxyConfig {
+                listen: "127.0.0.1:0".into(),
+                local_token: "tok".into(),
+            },
+            backends: vec![zone_router::config::Backend {
+                name: "test".into(),
+                url: "http://test".into(),
+                token: "t".into(),
+                active: true,
+                auth_type: zone_router::config::AuthType::default(),
+                model_map: None,
+            }],
+        };
+        let mut app =
+            zone_router::state::AppState::new(config, dir.path().join("scroll.toml")).unwrap();
+
+        // Create a long response body with a distinctive tail marker
+        let mut long_body = String::new();
+        for i in 0..100 {
+            long_body.push_str(&format!("line-{i}: some content here\n"));
+        }
+        long_body.push_str("TAIL_MARKER_END_OF_CONTENT");
+
+        app.stats.record(zone_router::stats::RequestLogEntry {
+            timestamp: chrono::Utc::now(),
+            backend: "test".into(),
+            latency_ms: 10,
+            request: zone_router::stats::CapturedRequest {
+                method: "GET".into(),
+                path: "/api".into(),
+                headers: zone_router::stats::HeaderPairs::default(),
+                body: None,
+            },
+            response: zone_router::stats::CapturedResponse {
+                status: 200,
+                headers: zone_router::stats::HeaderPairs::default(),
+                body: Some(long_body),
+            },
+        });
+
+        let width: u16 = 100;
+        let height: u16 = 40;
+
+        // At scroll=0, the tail marker should NOT be visible
+        let tui_top = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::DetailView,
+            log_cursor: 0,
+            detail_scroll: 0,
+            ..TuiState::default()
+        };
+        let output_top = render_to_string(&app, &tui_top, width, height);
+        assert!(
+            !output_top.contains("TAIL_MARKER"),
+            "tail should NOT be visible at scroll=0"
+        );
+
+        // At a large scroll value, the tail marker SHOULD be visible
+        let tui_bottom = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::DetailView,
+            log_cursor: 0,
+            detail_scroll: 200, // intentionally over-large; should clamp
+            ..TuiState::default()
+        };
+        let output_bottom = render_to_string(&app, &tui_bottom, width, height);
+        assert!(
+            output_bottom.contains("TAIL_MARKER"),
+            "tail should be visible when scrolled to bottom"
+        );
+
+        // Verify scroll clamping: scrolling beyond content should still show the tail
+        let tui_clamped = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::DetailView,
+            log_cursor: 0,
+            detail_scroll: 9999,
+            ..TuiState::default()
+        };
+        let output_clamped = render_to_string(&app, &tui_clamped, width, height);
+        assert!(
+            output_clamped.contains("TAIL_MARKER"),
+            "over-scrolling should clamp and still show tail content"
         );
     }
 }

@@ -76,13 +76,38 @@ fn extract_header_pairs(headers: &HeaderMap) -> HeaderPairs {
 
 const MAX_SSE_EVENTS: usize = 20;
 
+/// Find the first blank-line delimiter in `buf`, returning the byte offset
+/// just past the delimiter. Handles both `\n\n` and `\r\n\r\n`.
+fn find_blank_line(buf: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while i < buf.len() {
+        if buf[i] == b'\r'
+            && i + 3 < buf.len()
+            && buf[i + 1] == b'\n'
+            && buf[i + 2] == b'\r'
+            && buf[i + 3] == b'\n'
+        {
+            return Some(i + 4);
+        }
+        if buf[i] == b'\n' && i + 1 < buf.len() && buf[i + 1] == b'\n' {
+            return Some(i + 2);
+        }
+        i += 1;
+    }
+    None
+}
+
 /// A stream wrapper that buffers the first N SSE events and signals completion on drop.
+///
+/// Buffers raw bytes to handle UTF-8 code points split across chunk boundaries.
+/// Recognises both LF (`\n\n`) and CRLF (`\r\n\r\n`) blank-line event delimiters.
 struct SseBufferingStream<S> {
     inner: S,
     done_tx: Option<tokio::sync::oneshot::Sender<Option<String>>>,
-    buffer: String,
-    /// Partial text carried over from the previous chunk (not yet terminated by a blank line).
-    carry: String,
+    /// Raw byte buffer for accumulated preview content (first N events).
+    preview: Vec<u8>,
+    /// Carry buffer holding bytes not yet terminated by a blank line.
+    carry: Vec<u8>,
     event_count: usize,
 }
 
@@ -95,20 +120,15 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let poll = Pin::new(&mut self.inner).poll_next(cx);
         if let Poll::Ready(Some(Ok(ref chunk))) = poll {
-            let text = std::str::from_utf8(chunk).unwrap_or("");
-            self.carry.push_str(text);
+            self.carry.extend_from_slice(chunk);
 
-            // SSE events are delimited by blank lines (\n\n).
-            // Split on \n\n to find complete events; the last segment
-            // is carried over as a partial event until the next chunk.
-            while let Some(pos) = self.carry.find("\n\n") {
-                let event_end = pos + 2; // include the \n\n
-                let event = self.carry[..event_end].to_owned();
-                self.carry = self.carry[event_end..].to_owned();
+            while let Some(delim_end) = find_blank_line(&self.carry) {
+                let event_bytes = self.carry[..delim_end].to_vec();
+                self.carry = self.carry[delim_end..].to_vec();
 
                 self.event_count += 1;
                 if self.event_count <= MAX_SSE_EVENTS {
-                    self.buffer.push_str(&event);
+                    self.preview.extend_from_slice(&event_bytes);
                 }
             }
         }
@@ -118,25 +138,25 @@ where
 
 impl<S> Drop for SseBufferingStream<S> {
     fn drop(&mut self) {
-        // Flush any remaining carry as a final partial event.
         if !self.carry.is_empty() {
             self.event_count += 1;
             if self.event_count <= MAX_SSE_EVENTS {
-                self.buffer.push_str(&self.carry);
+                self.preview.extend_from_slice(&self.carry);
             }
         }
 
         if let Some(tx) = self.done_tx.take() {
             let body = if self.event_count > MAX_SSE_EVENTS {
+                let text = String::from_utf8_lossy(&self.preview);
                 Some(format!(
                     "{}\n... (truncated, {} events total)",
-                    self.buffer.trim_end(),
+                    text.trim_end(),
                     self.event_count
                 ))
-            } else if self.buffer.is_empty() {
+            } else if self.preview.is_empty() {
                 None
             } else {
-                Some(self.buffer.clone())
+                Some(String::from_utf8_lossy(&self.preview).into_owned())
             };
             let _ = tx.send(body);
         }
@@ -280,8 +300,8 @@ pub async fn proxy_handler(
                 let wrapped = SseBufferingStream {
                     inner: resp.bytes_stream(),
                     done_tx: Some(done_tx),
-                    buffer: String::new(),
-                    carry: String::new(),
+                    preview: Vec::new(),
+                    carry: Vec::new(),
                     event_count: 0,
                 };
                 let body = Body::from_stream(wrapped);

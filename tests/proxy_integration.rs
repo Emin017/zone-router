@@ -1178,3 +1178,72 @@ async fn sse_multi_data_line_event_counts_as_one() {
         "should count 25 logical events, not 75 data: markers, got: {body}"
     );
 }
+
+#[tokio::test]
+async fn sse_crlf_delimited_events_counted_correctly() {
+    // SSE spec allows CRLF (\r\n) line endings. Events delimited by \r\n\r\n.
+    let app = Router::new().route(
+        "/v1/messages",
+        post(|| async {
+            let mut raw = String::new();
+            for i in 0..25 {
+                raw.push_str(&format!("data: crlf-event-{i}\r\n\r\n"));
+            }
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                raw,
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let state = make_state(
+        vec![("sse-crlf", &format!("http://{addr}"), "tok")],
+        "secret",
+    );
+    let router = zone_router::proxy::server::build_router(state.clone());
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let _body = axum::body::to_bytes(resp.into_body(), 10 * 1024 * 1024)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let s = state.read().await;
+    assert_eq!(s.stats.log.len(), 1);
+    let entry = &s.stats.log[0];
+    let body = entry.response.body.as_deref().unwrap();
+    assert!(
+        body.contains("crlf-event-0"),
+        "first CRLF event should be captured, got: {body}"
+    );
+    assert!(
+        body.contains("crlf-event-19"),
+        "20th CRLF event should be captured, got: {body}"
+    );
+    assert!(
+        !body.contains("crlf-event-20"),
+        "21st CRLF event should NOT be captured, got: {body}"
+    );
+    assert!(
+        body.contains("truncated"),
+        "should have truncation marker for CRLF events, got: {body}"
+    );
+    assert!(
+        body.contains("25 events total"),
+        "should count 25 CRLF events, got: {body}"
+    );
+}
