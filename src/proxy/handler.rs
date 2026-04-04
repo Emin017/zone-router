@@ -170,6 +170,8 @@ struct SseBufferingStream<S> {
     /// Small tail buffer for cross-chunk delimiter detection after done_buffering.
     /// Retains at most 3 trailing bytes (\r\n\r is the longest partial delimiter).
     tail: Vec<u8>,
+    /// Total bytes received across all chunks, for accurate truncation reporting.
+    total_bytes: usize,
 }
 
 /// Returns true if the SSE frame contains a `data:` field line,
@@ -198,6 +200,7 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let poll = Pin::new(&mut self.inner).poll_next(cx);
         if let Poll::Ready(Some(Ok(ref chunk))) = poll {
+            self.total_bytes += chunk.len();
             // Stop accumulating into carry once we've exceeded both the event
             // cap and byte cap — there's nothing left to buffer.
             let done_buffering =
@@ -289,7 +292,7 @@ impl<S> Drop for SseBufferingStream<S> {
                 let reason = if self.event_count > MAX_SSE_EVENTS {
                     format!("{} events total", self.event_count)
                 } else {
-                    format!("{} bytes total", self.preview.len())
+                    format!("{} bytes total", self.total_bytes)
                 };
                 Some(format!("{}\n... (truncated, {reason})", text.trim_end(),))
             } else if self.preview.is_empty() {
@@ -449,6 +452,7 @@ pub async fn proxy_handler(
                     event_count: 0,
                     carry_flushed_data: false,
                     tail: Vec::new(),
+                    total_bytes: 0,
                 };
                 let body = Body::from_stream(wrapped);
 

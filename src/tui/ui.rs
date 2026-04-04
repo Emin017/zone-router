@@ -355,10 +355,17 @@ fn draw_detail_panel(frame: &mut Frame, state: &AppState, tui: &TuiState, log_ar
     }
 
     let entry = match tui.detail_entry_id {
-        Some(id) => match state.stats.log.iter().find(|e| e.id == id) {
-            Some(e) => e,
-            None => return,
-        },
+        Some(id) => state
+            .stats
+            .log
+            .iter()
+            .find(|e| e.id == id)
+            .unwrap_or_else(|| {
+                // Entry was evicted — fall back to the current cursor position
+                let clamped = tui.log_cursor.min(log_len.saturating_sub(1));
+                let deque_idx = log_len.saturating_sub(1) - clamped;
+                &state.stats.log[deque_idx]
+            }),
         None => {
             let clamped = tui.log_cursor.min(log_len.saturating_sub(1));
             let deque_idx = log_len.saturating_sub(1) - clamped;
