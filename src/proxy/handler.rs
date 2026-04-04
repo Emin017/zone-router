@@ -64,6 +64,10 @@ fn extract_header_pairs(headers: &HeaderMap) -> HeaderPairs {
     HeaderPairs(
         headers
             .iter()
+            .filter(|(name, _)| {
+                let n = name.as_str().to_lowercase();
+                n != AUTH_HEADER && n != "authorization"
+            })
             .filter_map(|(name, value)| {
                 value
                     .to_str()
@@ -144,8 +148,16 @@ where
                 self.carry = self.carry[delim_end..].to_vec();
 
                 self.event_count += 1;
-                if self.event_count <= MAX_SSE_EVENTS {
-                    self.preview.extend_from_slice(&event_bytes);
+                if self.event_count <= MAX_SSE_EVENTS
+                    && self.preview.len() < MAX_CAPTURED_BODY_BYTES
+                {
+                    let remaining_cap = MAX_CAPTURED_BODY_BYTES - self.preview.len();
+                    if event_bytes.len() <= remaining_cap {
+                        self.preview.extend_from_slice(&event_bytes);
+                    } else {
+                        self.preview
+                            .extend_from_slice(&event_bytes[..remaining_cap]);
+                    }
                 }
             }
         }
@@ -157,8 +169,10 @@ impl<S> Drop for SseBufferingStream<S> {
     fn drop(&mut self) {
         if !self.carry.is_empty() {
             self.event_count += 1;
-            if self.event_count <= MAX_SSE_EVENTS {
-                self.preview.extend_from_slice(&self.carry);
+            if self.event_count <= MAX_SSE_EVENTS && self.preview.len() < MAX_CAPTURED_BODY_BYTES {
+                let remaining_cap = MAX_CAPTURED_BODY_BYTES - self.preview.len();
+                let to_append = self.carry.len().min(remaining_cap);
+                self.preview.extend_from_slice(&self.carry[..to_append]);
             }
         }
 
