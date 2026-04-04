@@ -144,23 +144,55 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let poll = Pin::new(&mut self.inner).poll_next(cx);
         if let Poll::Ready(Some(Ok(ref chunk))) = poll {
-            self.carry.extend_from_slice(chunk);
+            // Stop accumulating into carry once we've exceeded both the event
+            // cap and byte cap — there's nothing left to buffer.
+            let done_buffering =
+                self.event_count >= MAX_SSE_EVENTS && self.preview.len() >= MAX_CAPTURED_BODY_BYTES;
 
-            while let Some(delim_end) = find_blank_line(&self.carry) {
-                let event_bytes = self.carry[..delim_end].to_vec();
-                self.carry = self.carry[delim_end..].to_vec();
+            if done_buffering {
+                // Still need to count events for the truncation marker,
+                // but don't grow carry unboundedly.
+                let text = std::str::from_utf8(chunk).unwrap_or("");
+                // Count blank-line delimiters in this chunk for event counting
+                let mut remaining = text;
+                while let Some(pos) = remaining.find("\n\n") {
+                    self.event_count += 1;
+                    remaining = &remaining[pos + 2..];
+                }
+            } else {
+                self.carry.extend_from_slice(chunk);
 
-                self.event_count += 1;
-                if self.event_count <= MAX_SSE_EVENTS
-                    && self.preview.len() < MAX_CAPTURED_BODY_BYTES
-                {
-                    let remaining_cap = MAX_CAPTURED_BODY_BYTES - self.preview.len();
-                    if event_bytes.len() <= remaining_cap {
-                        self.preview.extend_from_slice(&event_bytes);
-                    } else {
-                        self.preview
-                            .extend_from_slice(&event_bytes[..remaining_cap]);
+                while let Some(delim_end) = find_blank_line(&self.carry) {
+                    let event_bytes = self.carry[..delim_end].to_vec();
+                    self.carry = self.carry[delim_end..].to_vec();
+
+                    self.event_count += 1;
+                    if self.event_count <= MAX_SSE_EVENTS
+                        && self.preview.len() < MAX_CAPTURED_BODY_BYTES
+                    {
+                        let remaining_cap = MAX_CAPTURED_BODY_BYTES - self.preview.len();
+                        if event_bytes.len() <= remaining_cap {
+                            self.preview.extend_from_slice(&event_bytes);
+                        } else {
+                            self.preview
+                                .extend_from_slice(&event_bytes[..remaining_cap]);
+                        }
                     }
+                }
+
+                // If carry itself has grown past the cap with no delimiter in sight,
+                // flush what we can into preview and discard the rest.
+                if self.carry.len() > MAX_CAPTURED_BODY_BYTES {
+                    if self.event_count < MAX_SSE_EVENTS
+                        && self.preview.len() < MAX_CAPTURED_BODY_BYTES
+                    {
+                        let remaining_cap = MAX_CAPTURED_BODY_BYTES - self.preview.len();
+                        let to_take = self.carry.len().min(remaining_cap);
+                        let flush = self.carry[..to_take].to_vec();
+                        self.preview.extend_from_slice(&flush);
+                    }
+                    self.carry.clear();
+                    self.event_count += 1;
                 }
             }
         }
@@ -244,8 +276,6 @@ pub async fn proxy_handler(
         uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
     );
 
-    let req_headers = extract_header_pairs(&headers);
-
     let forwarded_headers: reqwest::header::HeaderMap = headers
         .iter()
         .filter(|(name, _)| {
@@ -285,6 +315,15 @@ pub async fn proxy_handler(
     } else {
         forwarded_headers
     };
+
+    // Capture request headers for logging after stripping stale body-dependent
+    // headers, so the detail panel stays consistent with the rewritten body.
+    let mut req_headers = extract_header_pairs(&headers);
+    if body_changed {
+        req_headers.0.retain(|(name, _)| {
+            !matches!(name.as_str(), "content-length" | "content-md5" | "digest")
+        });
+    }
 
     let client = CLIENT.with(|c| c.clone());
     let auth_header = match backend.auth_type {
