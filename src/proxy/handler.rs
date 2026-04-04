@@ -46,18 +46,21 @@ fn make_log_entry(
     }
 }
 
-fn rewrite_model(body: Bytes, mm: &ModelMap) -> Bytes {
+fn rewrite_model(body: Bytes, mm: &ModelMap) -> (Bytes, bool) {
     let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return body;
+        return (body, false);
     };
     let Some(model_str) = value.get("model").and_then(|v| v.as_str()) else {
-        return body;
+        return (body, false);
     };
     let Some(replacement) = mm.resolve(model_str) else {
-        return body;
+        return (body, false);
     };
     value["model"] = serde_json::Value::String(replacement.to_owned());
-    serde_json::to_vec(&value).map(Bytes::from).unwrap_or(body)
+    match serde_json::to_vec(&value) {
+        Ok(v) => (Bytes::from(v), true),
+        Err(_) => (body, false),
+    }
 }
 
 fn extract_header_pairs(headers: &HeaderMap) -> HeaderPairs {
@@ -263,9 +266,7 @@ pub async fn proxy_handler(
 
     let (body_bytes, body_changed) = match backend.model_map.as_ref().filter(|mm| mm.has_any()) {
         Some(mm) => {
-            let original = body_bytes.to_vec();
-            let rewritten = rewrite_model(body_bytes, mm);
-            let changed = rewritten[..] != original[..];
+            let (rewritten, changed) = rewrite_model(body_bytes, mm);
             (rewritten, changed)
         }
         None => (body_bytes, false),
