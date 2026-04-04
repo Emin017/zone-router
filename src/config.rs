@@ -63,14 +63,19 @@ impl ModelMap {
     /// to avoid false positives on unrelated model names.
     pub fn resolve(&self, model: &str) -> Option<&str> {
         let lower = model.to_ascii_lowercase();
-        if !lower.starts_with("claude") {
+        if !lower.starts_with("claude-") {
             return None;
         }
-        if lower.contains("-opus") {
+        // Match tier tokens at word boundaries: "-opus-" or trailing "-opus"
+        let has_tier = |tier: &str| {
+            let pattern = format!("-{tier}-");
+            lower.contains(&pattern) || lower.ends_with(&format!("-{tier}"))
+        };
+        if has_tier("opus") {
             self.opus.as_deref()
-        } else if lower.contains("-sonnet") {
+        } else if has_tier("sonnet") {
             self.sonnet.as_deref()
-        } else if lower.contains("-haiku") {
+        } else if has_tier("haiku") {
             self.haiku.as_deref()
         } else {
             None

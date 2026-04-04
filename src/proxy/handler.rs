@@ -135,6 +135,23 @@ struct SseBufferingStream<S> {
     event_count: usize,
 }
 
+/// Returns true if the SSE frame contains a `data:` field line,
+/// meaning it carries actual event payload rather than being a
+/// comment-only or empty keepalive frame.
+fn is_data_event(frame: &[u8]) -> bool {
+    for line in frame.split(|&b| b == b'\n') {
+        let trimmed = if line.first() == Some(&b'\r') {
+            &line[1..]
+        } else {
+            line
+        };
+        if trimmed.starts_with(b"data:") || trimmed == b"data" {
+            return true;
+        }
+    }
+    false
+}
+
 impl<S> Stream for SseBufferingStream<S>
 where
     S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
@@ -150,14 +167,16 @@ where
                 self.event_count >= MAX_SSE_EVENTS && self.preview.len() >= MAX_CAPTURED_BODY_BYTES;
 
             if done_buffering {
-                // Still need to count events for the truncation marker,
+                // Still need to count data events for the truncation marker,
                 // but don't grow carry unboundedly.
-                let text = std::str::from_utf8(chunk).unwrap_or("");
-                // Count blank-line delimiters in this chunk for event counting
-                let mut remaining = text;
-                while let Some(pos) = remaining.find("\n\n") {
-                    self.event_count += 1;
-                    remaining = &remaining[pos + 2..];
+                let mut temp_carry = Vec::new();
+                temp_carry.extend_from_slice(chunk);
+                while let Some(delim_end) = find_blank_line(&temp_carry) {
+                    let frame = &temp_carry[..delim_end];
+                    if is_data_event(frame) {
+                        self.event_count += 1;
+                    }
+                    temp_carry = temp_carry[delim_end..].to_vec();
                 }
             } else {
                 self.carry.extend_from_slice(chunk);
@@ -166,6 +185,9 @@ where
                     let event_bytes = self.carry[..delim_end].to_vec();
                     self.carry = self.carry[delim_end..].to_vec();
 
+                    if !is_data_event(&event_bytes) {
+                        continue;
+                    }
                     self.event_count += 1;
                     if self.event_count <= MAX_SSE_EVENTS
                         && self.preview.len() < MAX_CAPTURED_BODY_BYTES
