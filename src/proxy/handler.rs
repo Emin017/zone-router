@@ -51,15 +51,6 @@ fn make_log_entry(
 }
 
 fn rewrite_model(body: Bytes, mm: &ModelMap) -> (Bytes, bool) {
-    // Quick scan: only parse full JSON if body contains a plausible "model" key.
-    // This avoids deserializing large payloads (up to 200MB) that don't need rewriting.
-    if body.len() > 512 * 1024
-        || !body
-            .windows(8)
-            .any(|w| w == b"\"model\":" || w == b"\"model\" ")
-    {
-        return (body, false);
-    }
     let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return (body, false);
     };
