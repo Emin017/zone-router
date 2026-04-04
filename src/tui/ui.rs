@@ -343,15 +343,19 @@ fn draw_detail_panel(frame: &mut Frame, state: &AppState, tui: &TuiState, log_ar
         return;
     }
 
-    let deque_idx = match tui.detail_deque_index {
-        Some(idx) if idx < log_len => idx,
-        _ => {
+    let entry = match tui.detail_entry_id {
+        Some(id) => match state.stats.log.iter().find(|e| e.id == id) {
+            Some(e) => e,
+            None => return,
+        },
+        None => {
             let clamped = tui.log_cursor.min(log_len.saturating_sub(1));
-            log_len.saturating_sub(1) - clamped
+            let deque_idx = log_len.saturating_sub(1) - clamped;
+            match state.stats.log.get(deque_idx) {
+                Some(e) => e,
+                None => return,
+            }
         }
-    };
-    let Some(entry) = state.stats.log.get(deque_idx) else {
-        return;
     };
 
     let panel_area = centered_rect(log_area, 80, 90);

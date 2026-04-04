@@ -1,6 +1,8 @@
 use crate::config::{AuthType, ModelMap};
 use crate::state::AppState;
-use crate::stats::{CapturedRequest, CapturedResponse, HeaderPairs, RequestLogEntry};
+use crate::stats::{
+    truncate_body_for_log, CapturedRequest, CapturedResponse, HeaderPairs, RequestLogEntry,
+};
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
@@ -34,16 +36,18 @@ std::thread_local! {
 fn make_log_entry(
     backend: &str,
     start: Instant,
-    request: CapturedRequest,
-    response: CapturedResponse,
+    mut request: CapturedRequest,
+    mut response: CapturedResponse,
 ) -> RequestLogEntry {
-    RequestLogEntry {
-        timestamp: Utc::now(),
-        backend: backend.to_owned(),
-        latency_ms: start.elapsed().as_millis() as u64,
+    request.body = truncate_body_for_log(request.body);
+    response.body = truncate_body_for_log(response.body);
+    RequestLogEntry::new(
+        Utc::now(),
+        backend.to_owned(),
+        start.elapsed().as_millis() as u64,
         request,
         response,
-    }
+    )
 }
 
 fn rewrite_model(body: Bytes, mm: &ModelMap) -> (Bytes, bool) {

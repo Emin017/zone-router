@@ -1,7 +1,11 @@
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_LOG_ENTRIES: usize = 500;
+const MAX_BODY_PREVIEW: usize = 4096;
+
+static NEXT_ENTRY_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Ordered collection of HTTP header name-value pairs.
 #[derive(Debug, Clone, Default)]
@@ -26,11 +30,47 @@ pub struct CapturedResponse {
 
 #[derive(Debug, Clone)]
 pub struct RequestLogEntry {
+    pub id: u64,
     pub timestamp: DateTime<Utc>,
     pub backend: String,
     pub latency_ms: u64,
     pub request: CapturedRequest,
     pub response: CapturedResponse,
+}
+
+impl RequestLogEntry {
+    pub fn new(
+        timestamp: DateTime<Utc>,
+        backend: String,
+        latency_ms: u64,
+        request: CapturedRequest,
+        response: CapturedResponse,
+    ) -> Self {
+        Self {
+            id: NEXT_ENTRY_ID.fetch_add(1, Ordering::Relaxed),
+            timestamp,
+            backend,
+            latency_ms,
+            request,
+            response,
+        }
+    }
+}
+
+/// Truncate a body string to `MAX_BODY_PREVIEW` bytes for storage in log entries.
+pub fn truncate_body_for_log(body: Option<String>) -> Option<String> {
+    body.map(|s| {
+        if s.len() <= MAX_BODY_PREVIEW {
+            s
+        } else {
+            // Find a char boundary at or before the limit
+            let mut end = MAX_BODY_PREVIEW;
+            while end > 0 && !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}...(truncated, {} bytes total)", &s[..end], s.len())
+        }
+    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -125,22 +165,22 @@ mod tests {
         status: u16,
         latency_ms: u64,
     ) -> RequestLogEntry {
-        RequestLogEntry {
-            timestamp: Utc::now(),
-            backend: backend.into(),
+        RequestLogEntry::new(
+            Utc::now(),
+            backend.into(),
             latency_ms,
-            request: CapturedRequest {
+            CapturedRequest {
                 method: method.into(),
                 path: path.into(),
                 headers: HeaderPairs::default(),
                 body: None,
             },
-            response: CapturedResponse {
+            CapturedResponse {
                 status,
                 headers: HeaderPairs::default(),
                 body: None,
             },
-        }
+        )
     }
 
     #[test]

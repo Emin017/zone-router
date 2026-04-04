@@ -2336,22 +2336,22 @@ mod tui_tests {
         {
             let mut s = rt.block_on(state.write());
             for i in 0..5 {
-                s.stats.record(zone_router::stats::RequestLogEntry {
-                    timestamp: chrono::Utc::now(),
-                    backend: "test".into(),
-                    latency_ms: i * 10,
-                    request: zone_router::stats::CapturedRequest {
+                s.stats.record(zone_router::stats::RequestLogEntry::new(
+                    chrono::Utc::now(),
+                    "test".into(),
+                    i * 10,
+                    zone_router::stats::CapturedRequest {
                         method: "POST".into(),
                         path: "/v1/messages".into(),
                         headers: zone_router::stats::HeaderPairs::default(),
                         body: Some(format!("body-{i}")),
                     },
-                    response: zone_router::stats::CapturedResponse {
+                    zone_router::stats::CapturedResponse {
                         status: 200,
                         headers: zone_router::stats::HeaderPairs::default(),
                         body: Some(format!("resp-{i}")),
                     },
-                });
+                ));
             }
         }
         tui.focus = FocusPanel::RequestLog;
@@ -2495,27 +2495,41 @@ mod tui_tests {
         let (mut tui, state, rt, _dir) = make_tui_with_log();
         tui.mode = InputMode::DetailView;
         tui.log_cursor = 0;
-        // Anchor to deque index 4 (newest entry, 5 entries total)
-        tui.detail_deque_index = Some(4);
 
-        // n moves to next older entry (lower deque index)
+        // Get the newest entry's ID (5 entries, newest is at deque index 4)
+        let newest_id = {
+            let s = rt.block_on(state.read());
+            s.stats.log.back().unwrap().id
+        };
+        tui.detail_entry_id = Some(newest_id);
+
+        // n moves to next older entry
         zone_router::tui::input::handle_input_mode(
             key(KeyCode::Char('n')),
             &mut tui,
             &state,
             rt.handle(),
         );
-        assert_eq!(tui.detail_deque_index, Some(3));
+        assert_ne!(
+            tui.detail_entry_id,
+            Some(newest_id),
+            "n should change entry"
+        );
         assert_eq!(tui.detail_scroll, 0, "n should reset scroll");
+        let _older_id = tui.detail_entry_id.unwrap();
 
-        // p moves to previous (newer) entry (higher deque index)
+        // p moves back to newer entry
         zone_router::tui::input::handle_input_mode(
             key(KeyCode::Char('p')),
             &mut tui,
             &state,
             rt.handle(),
         );
-        assert_eq!(tui.detail_deque_index, Some(4));
+        assert_eq!(
+            tui.detail_entry_id,
+            Some(newest_id),
+            "p should return to newest"
+        );
 
         // p at newest stays at newest
         zone_router::tui::input::handle_input_mode(
@@ -2524,10 +2538,14 @@ mod tui_tests {
             &state,
             rt.handle(),
         );
-        assert_eq!(tui.detail_deque_index, Some(4));
+        assert_eq!(tui.detail_entry_id, Some(newest_id), "p at newest stays");
 
-        // n all the way to oldest
-        tui.detail_deque_index = Some(0);
+        // Set to oldest entry and verify n stays there
+        let oldest_id = {
+            let s = rt.block_on(state.read());
+            s.stats.log.front().unwrap().id
+        };
+        tui.detail_entry_id = Some(oldest_id);
         zone_router::tui::input::handle_input_mode(
             key(KeyCode::Char('n')),
             &mut tui,
@@ -2535,8 +2553,8 @@ mod tui_tests {
             rt.handle(),
         );
         assert_eq!(
-            tui.detail_deque_index,
-            Some(0),
+            tui.detail_entry_id,
+            Some(oldest_id),
             "n at oldest stays at oldest"
         );
     }
@@ -2611,11 +2629,11 @@ mod tui_tests {
         };
         let mut app =
             zone_router::state::AppState::new(config, dir.path().join("render.toml")).unwrap();
-        app.stats.record(zone_router::stats::RequestLogEntry {
-            timestamp: chrono::Utc::now(),
-            backend: "openai".into(),
-            latency_ms: 245,
-            request: zone_router::stats::CapturedRequest {
+        app.stats.record(zone_router::stats::RequestLogEntry::new(
+            chrono::Utc::now(),
+            "openai".into(),
+            245,
+            zone_router::stats::CapturedRequest {
                 method: "POST".into(),
                 path: "/v1/messages".into(),
                 headers: zone_router::stats::HeaderPairs(vec![(
@@ -2624,7 +2642,7 @@ mod tui_tests {
                 )]),
                 body: Some(r#"{"model":"claude"}"#.into()),
             },
-            response: zone_router::stats::CapturedResponse {
+            zone_router::stats::CapturedResponse {
                 status: 200,
                 headers: zone_router::stats::HeaderPairs(vec![(
                     "content-type".into(),
@@ -2632,7 +2650,7 @@ mod tui_tests {
                 )]),
                 body: Some(r#"{"id":"msg_123","type":"message"}"#.into()),
             },
-        });
+        ));
         std::sync::Arc::new(tokio::sync::RwLock::new(app))
     }
 
@@ -2909,11 +2927,11 @@ mod tui_tests {
         };
         let mut app =
             zone_router::state::AppState::new(config, dir.path().join("unicode.toml")).unwrap();
-        app.stats.record(zone_router::stats::RequestLogEntry {
-            timestamp: chrono::Utc::now(),
-            backend: "test".into(),
-            latency_ms: 10,
-            request: zone_router::stats::CapturedRequest {
+        app.stats.record(zone_router::stats::RequestLogEntry::new(
+            chrono::Utc::now(),
+            "test".into(),
+            10,
+            zone_router::stats::CapturedRequest {
                 method: "POST".into(),
                 path: "/api".into(),
                 headers: zone_router::stats::HeaderPairs(vec![(
@@ -2922,12 +2940,12 @@ mod tui_tests {
                 )]),
                 body: Some("こんにちは世界🌍".into()),
             },
-            response: zone_router::stats::CapturedResponse {
+            zone_router::stats::CapturedResponse {
                 status: 200,
                 headers: zone_router::stats::HeaderPairs::default(),
                 body: Some("Ÿéponse avéc dés àccents et emoji 🚀✨".into()),
             },
-        });
+        ));
 
         let tui = TuiState {
             focus: FocusPanel::RequestLog,
@@ -3046,22 +3064,22 @@ mod tui_tests {
         }
         long_body.push_str("TAIL_MARKER_END_OF_CONTENT");
 
-        app.stats.record(zone_router::stats::RequestLogEntry {
-            timestamp: chrono::Utc::now(),
-            backend: "test".into(),
-            latency_ms: 10,
-            request: zone_router::stats::CapturedRequest {
+        app.stats.record(zone_router::stats::RequestLogEntry::new(
+            chrono::Utc::now(),
+            "test".into(),
+            10,
+            zone_router::stats::CapturedRequest {
                 method: "GET".into(),
                 path: "/api".into(),
                 headers: zone_router::stats::HeaderPairs::default(),
                 body: None,
             },
-            response: zone_router::stats::CapturedResponse {
+            zone_router::stats::CapturedResponse {
                 status: 200,
                 headers: zone_router::stats::HeaderPairs::default(),
                 body: Some(long_body),
             },
-        });
+        ));
 
         let width: u16 = 100;
         let height: u16 = 40;
@@ -3232,22 +3250,22 @@ mod tui_tests {
         }
         long_body.push_str("UTAIL");
 
-        app.stats.record(zone_router::stats::RequestLogEntry {
-            timestamp: chrono::Utc::now(),
-            backend: "test".into(),
-            latency_ms: 10,
-            request: zone_router::stats::CapturedRequest {
+        app.stats.record(zone_router::stats::RequestLogEntry::new(
+            chrono::Utc::now(),
+            "test".into(),
+            10,
+            zone_router::stats::CapturedRequest {
                 method: "GET".into(),
                 path: "/api".into(),
                 headers: zone_router::stats::HeaderPairs::default(),
                 body: None,
             },
-            response: zone_router::stats::CapturedResponse {
+            zone_router::stats::CapturedResponse {
                 status: 200,
                 headers: zone_router::stats::HeaderPairs::default(),
                 body: Some(long_body),
             },
-        });
+        ));
 
         let width: u16 = 80;
         let height: u16 = 40;
@@ -3320,22 +3338,22 @@ mod tui_tests {
 
         // Add 30 log entries so they exceed the viewport
         for i in 0..30 {
-            app.stats.record(zone_router::stats::RequestLogEntry {
-                timestamp: chrono::Utc::now(),
-                backend: format!("backend-{i}"),
-                latency_ms: i as u64,
-                request: zone_router::stats::CapturedRequest {
+            app.stats.record(zone_router::stats::RequestLogEntry::new(
+                chrono::Utc::now(),
+                format!("backend-{i}"),
+                i as u64,
+                zone_router::stats::CapturedRequest {
                     method: "POST".into(),
                     path: format!("/path-{i}"),
                     headers: zone_router::stats::HeaderPairs::default(),
                     body: None,
                 },
-                response: zone_router::stats::CapturedResponse {
+                zone_router::stats::CapturedResponse {
                     status: 200,
                     headers: zone_router::stats::HeaderPairs::default(),
                     body: None,
                 },
-            });
+            ));
         }
 
         let width: u16 = 100;

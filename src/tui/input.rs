@@ -84,8 +84,11 @@ pub fn handle_input(
             } else if tui.focus == FocusPanel::RequestLog && log_len > 0 {
                 tui.detail_scroll = 0;
                 tui.body_expanded = false;
-                tui.detail_deque_index =
-                    Some(log_len.saturating_sub(1) - tui.log_cursor.min(log_len.saturating_sub(1)));
+                let deque_idx =
+                    log_len.saturating_sub(1) - tui.log_cursor.min(log_len.saturating_sub(1));
+                let s = rt.block_on(state.read());
+                tui.detail_entry_id = s.stats.log.get(deque_idx).map(|e| e.id);
+                drop(s);
                 tui.mode = InputMode::DetailView;
             }
         }
@@ -363,10 +366,6 @@ pub fn handle_input_mode(
         }
         KeyCode::Char(c) => {
             if tui.mode == InputMode::DetailView {
-                let log_len = {
-                    let s = rt.block_on(state.read());
-                    s.stats.log.len()
-                };
                 match c {
                     'j' => {
                         tui.detail_scroll = tui.detail_scroll.saturating_add(1);
@@ -375,20 +374,28 @@ pub fn handle_input_mode(
                         tui.detail_scroll = tui.detail_scroll.saturating_sub(1);
                     }
                     'n' => {
-                        if let Some(idx) = tui.detail_deque_index {
-                            if idx > 0 {
-                                tui.detail_deque_index = Some(idx - 1);
-                                tui.detail_scroll = 0;
-                                tui.body_expanded = false;
+                        if let Some(current_id) = tui.detail_entry_id {
+                            let s = rt.block_on(state.read());
+                            let pos = s.stats.log.iter().position(|e| e.id == current_id);
+                            if let Some(idx) = pos {
+                                if idx > 0 {
+                                    tui.detail_entry_id = Some(s.stats.log[idx - 1].id);
+                                    tui.detail_scroll = 0;
+                                    tui.body_expanded = false;
+                                }
                             }
                         }
                     }
                     'p' => {
-                        if let Some(idx) = tui.detail_deque_index {
-                            if idx + 1 < log_len {
-                                tui.detail_deque_index = Some(idx + 1);
-                                tui.detail_scroll = 0;
-                                tui.body_expanded = false;
+                        if let Some(current_id) = tui.detail_entry_id {
+                            let s = rt.block_on(state.read());
+                            let pos = s.stats.log.iter().position(|e| e.id == current_id);
+                            if let Some(idx) = pos {
+                                if idx + 1 < s.stats.log.len() {
+                                    tui.detail_entry_id = Some(s.stats.log[idx + 1].id);
+                                    tui.detail_scroll = 0;
+                                    tui.body_expanded = false;
+                                }
                             }
                         }
                     }
