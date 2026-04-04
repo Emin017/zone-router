@@ -1,6 +1,6 @@
 use crate::config::{AuthType, ModelMap};
 use crate::state::AppState;
-use crate::stats::RequestLogEntry;
+use crate::stats::{CapturedRequest, CapturedResponse, HeaderPairs, RequestLogEntry};
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
@@ -31,47 +31,18 @@ std::thread_local! {
     static CLIENT: reqwest::Client = build_client();
 }
 
-/// A stream wrapper that sends a signal when dropped (stream fully consumed or connection closed).
-struct LogOnDropStream<S> {
-    inner: S,
-    done_tx: Option<tokio::sync::oneshot::Sender<()>>,
-}
-
-impl<S> Stream for LogOnDropStream<S>
-where
-    S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
-{
-    type Item = Result<Bytes, std::io::Error>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.inner)
-            .poll_next(cx)
-            .map(|opt| opt.map(|r| r.map_err(std::io::Error::other)))
-    }
-}
-
-impl<S> Drop for LogOnDropStream<S> {
-    fn drop(&mut self) {
-        if let Some(tx) = self.done_tx.take() {
-            let _ = tx.send(());
-        }
-    }
-}
-
 fn make_log_entry(
     backend: &str,
-    method: &str,
-    path: &str,
-    status: u16,
     start: Instant,
+    request: CapturedRequest,
+    response: CapturedResponse,
 ) -> RequestLogEntry {
     RequestLogEntry {
         timestamp: Utc::now(),
         backend: backend.to_owned(),
-        method: method.to_owned(),
-        path: path.to_owned(),
-        status,
         latency_ms: start.elapsed().as_millis() as u64,
+        request,
+        response,
     }
 }
 
@@ -87,6 +58,69 @@ fn rewrite_model(body: Bytes, mm: &ModelMap) -> Bytes {
     };
     value["model"] = serde_json::Value::String(replacement.to_owned());
     serde_json::to_vec(&value).map(Bytes::from).unwrap_or(body)
+}
+
+fn extract_header_pairs(headers: &HeaderMap) -> HeaderPairs {
+    HeaderPairs(
+        headers
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|v| (name.as_str().to_owned(), v.to_owned()))
+            })
+            .collect(),
+    )
+}
+
+const MAX_SSE_EVENTS: usize = 20;
+
+/// A stream wrapper that sends a signal with buffered SSE body when dropped.
+struct SseBufferingStream<S> {
+    inner: S,
+    done_tx: Option<tokio::sync::oneshot::Sender<Option<String>>>,
+    buffer: String,
+    event_count: usize,
+}
+
+impl<S> Stream for SseBufferingStream<S>
+where
+    S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
+{
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let poll = Pin::new(&mut self.inner).poll_next(cx);
+        if let Poll::Ready(Some(Ok(ref chunk))) = poll {
+            if self.event_count < MAX_SSE_EVENTS {
+                if let Ok(text) = std::str::from_utf8(chunk) {
+                    self.buffer.push_str(text);
+                }
+            }
+            let chunk_str = std::str::from_utf8(chunk).unwrap_or("");
+            self.event_count += chunk_str.matches("data:").count();
+        }
+        poll.map(|opt| opt.map(|r| r.map_err(std::io::Error::other)))
+    }
+}
+
+impl<S> Drop for SseBufferingStream<S> {
+    fn drop(&mut self) {
+        if let Some(tx) = self.done_tx.take() {
+            let body = if self.event_count > MAX_SSE_EVENTS {
+                Some(format!(
+                    "{}\n... (truncated, {} events total)",
+                    self.buffer, self.event_count
+                ))
+            } else if self.buffer.is_empty() {
+                None
+            } else {
+                Some(self.buffer.clone())
+            };
+            let _ = tx.send(body);
+        }
+    }
 }
 
 pub async fn proxy_handler(
@@ -107,20 +141,16 @@ pub async fn proxy_handler(
         (s.local_token.clone(), backend)
     };
 
-    let request_token = if headers.get(AUTH_HEADER).is_some() {
-        headers
-            .get(AUTH_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-    } else {
-        headers
+    let request_token = match headers.get(AUTH_HEADER) {
+        Some(v) => v.to_str().unwrap_or(""),
+        None => headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| {
                 v.get(7..)
                     .filter(|_| v[..7].eq_ignore_ascii_case("Bearer "))
             })
-            .unwrap_or("")
+            .unwrap_or(""),
     };
 
     if request_token != local_token {
@@ -138,6 +168,8 @@ pub async fn proxy_handler(
         uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
     );
 
+    let req_headers = extract_header_pairs(&headers);
+
     let forwarded_headers: reqwest::header::HeaderMap = headers
         .iter()
         .filter(|(name, _)| {
@@ -154,6 +186,12 @@ pub async fn proxy_handler(
     let body_bytes = match axum::body::to_bytes(body, 200 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+
+    let req_body = if body_bytes.is_empty() {
+        None
+    } else {
+        Some(String::from_utf8_lossy(&body_bytes).into_owned())
     };
 
     let (body_bytes, body_changed) = match backend.model_map.as_ref().filter(|mm| mm.has_any()) {
@@ -204,6 +242,18 @@ pub async fn proxy_handler(
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|ct| ct.contains("text/event-stream"));
 
+            let resp_headers = HeaderPairs(
+                resp.headers()
+                    .iter()
+                    .filter_map(|(name, value)| {
+                        value
+                            .to_str()
+                            .ok()
+                            .map(|v| (name.as_str().to_owned(), v.to_owned()))
+                    })
+                    .collect(),
+            );
+
             let response_headers: HeaderMap = resp
                 .headers()
                 .iter()
@@ -216,16 +266,32 @@ pub async fn proxy_handler(
 
             if is_stream {
                 let state_clone = state.clone();
-                let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
-                let wrapped = LogOnDropStream {
+                let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Option<String>>();
+                let wrapped = SseBufferingStream {
                     inner: resp.bytes_stream(),
                     done_tx: Some(done_tx),
+                    buffer: String::new(),
+                    event_count: 0,
                 };
                 let body = Body::from_stream(wrapped);
 
                 tokio::spawn(async move {
-                    let _ = done_rx.await;
-                    let entry = make_log_entry(&backend_name, &method_str, &path, status, start);
+                    let sse_body = done_rx.await.unwrap_or(None);
+                    let entry = make_log_entry(
+                        &backend_name,
+                        start,
+                        CapturedRequest {
+                            method: method_str,
+                            path,
+                            headers: req_headers,
+                            body: req_body,
+                        },
+                        CapturedResponse {
+                            status,
+                            headers: resp_headers,
+                            body: sse_body,
+                        },
+                    );
                     state_clone.write().await.stats.record(entry);
                 });
 
@@ -236,20 +302,53 @@ pub async fn proxy_handler(
                 )
                     .into_response()
             } else {
-                let resp_body = resp.bytes().await.unwrap_or_default();
-                let entry = make_log_entry(&backend_name, &method_str, &path, status, start);
+                let resp_body_bytes = resp.bytes().await.unwrap_or_default();
+                let resp_body_str = if resp_body_bytes.is_empty() {
+                    None
+                } else {
+                    Some(String::from_utf8_lossy(&resp_body_bytes).into_owned())
+                };
+                let entry = make_log_entry(
+                    &backend_name,
+                    start,
+                    CapturedRequest {
+                        method: method_str,
+                        path,
+                        headers: req_headers,
+                        body: req_body,
+                    },
+                    CapturedResponse {
+                        status,
+                        headers: resp_headers,
+                        body: resp_body_str,
+                    },
+                );
                 state.write().await.stats.record(entry);
 
                 (
                     StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
                     response_headers,
-                    resp_body,
+                    resp_body_bytes,
                 )
                     .into_response()
             }
         }
         Err(_) => {
-            let entry = make_log_entry(&backend_name, &method_str, &path, 502, start);
+            let entry = make_log_entry(
+                &backend_name,
+                start,
+                CapturedRequest {
+                    method: method_str,
+                    path,
+                    headers: req_headers,
+                    body: req_body,
+                },
+                CapturedResponse {
+                    status: 502,
+                    headers: HeaderPairs::default(),
+                    body: None,
+                },
+            );
             state.write().await.stats.record(entry);
             StatusCode::BAD_GATEWAY.into_response()
         }

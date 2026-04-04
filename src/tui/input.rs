@@ -54,7 +54,7 @@ pub fn handle_input(
             }
             FocusPanel::RequestLog => {
                 if log_len > 0 {
-                    tui.log_scroll = (tui.log_scroll + 1).min(log_len.saturating_sub(1));
+                    tui.log_cursor = (tui.log_cursor + 1).min(log_len.saturating_sub(1));
                 }
             }
         },
@@ -63,7 +63,7 @@ pub fn handle_input(
                 tui.cursor = tui.cursor.saturating_sub(1);
             }
             FocusPanel::RequestLog => {
-                tui.log_scroll = tui.log_scroll.saturating_sub(1);
+                tui.log_cursor = tui.log_cursor.saturating_sub(1);
             }
         },
         KeyCode::Char('G') => {
@@ -81,6 +81,10 @@ pub fn handle_input(
         KeyCode::Enter => {
             if tui.focus == FocusPanel::Backends {
                 rt.block_on(state.write()).switch_backend(tui.cursor);
+            } else if tui.focus == FocusPanel::RequestLog && log_len > 0 {
+                tui.detail_scroll = 0;
+                tui.body_expanded = false;
+                tui.mode = InputMode::DetailView;
             }
         }
         KeyCode::Char(c @ '1'..='9') => {
@@ -144,10 +148,17 @@ pub fn handle_input_mode(
 ) {
     match key.code {
         KeyCode::Esc => {
-            tui.mode = InputMode::Normal;
-            tui.input_buffer.clear();
-            tui.auth_type_rejected = false;
-            tui.model_map_rejected = false;
+            if tui.mode == InputMode::DetailView {
+                tui.mode = InputMode::Normal;
+            } else {
+                tui.mode = InputMode::Normal;
+                tui.input_buffer.clear();
+                tui.auth_type_rejected = false;
+                tui.model_map_rejected = false;
+            }
+        }
+        KeyCode::Enter if tui.mode == InputMode::DetailView => {
+            tui.body_expanded = !tui.body_expanded;
         }
         KeyCode::Enter => match &tui.mode {
             InputMode::AddName => {
@@ -309,7 +320,7 @@ pub fn handle_input_mode(
             InputMode::ShowToken => {
                 tui.mode = InputMode::Normal;
             }
-            InputMode::Normal => {}
+            InputMode::Normal | InputMode::DetailView => {}
         },
         KeyCode::Backspace => {
             tui.input_buffer.pop();
@@ -351,7 +362,36 @@ pub fn handle_input_mode(
             tui.mode = InputMode::EditModelMap;
         }
         KeyCode::Char(c) => {
-            if tui.mode == InputMode::ShowToken {
+            if tui.mode == InputMode::DetailView {
+                let log_len = {
+                    let s = rt.block_on(state.read());
+                    s.stats.log.len()
+                };
+                match c {
+                    'j' => {
+                        tui.detail_scroll = tui.detail_scroll.saturating_add(1);
+                    }
+                    'k' => {
+                        tui.detail_scroll = tui.detail_scroll.saturating_sub(1);
+                    }
+                    'n' => {
+                        if log_len > 0 {
+                            tui.log_cursor = (tui.log_cursor + 1).min(log_len.saturating_sub(1));
+                            tui.detail_scroll = 0;
+                            tui.body_expanded = false;
+                        }
+                    }
+                    'p' => {
+                        tui.log_cursor = tui.log_cursor.saturating_sub(1);
+                        tui.detail_scroll = 0;
+                        tui.body_expanded = false;
+                    }
+                    'h' => {
+                        tui.mode = InputMode::Normal;
+                    }
+                    _ => {}
+                }
+            } else if tui.mode == InputMode::ShowToken {
                 tui.mode = InputMode::Normal;
             } else {
                 tui.input_buffer.push(c);

@@ -204,7 +204,7 @@ async fn logs_request_after_completion() {
     let s = state.read().await;
     assert_eq!(s.stats.log.len(), 1);
     assert_eq!(s.stats.log[0].backend, "log-test");
-    assert_eq!(s.stats.log[0].status, 200);
+    assert_eq!(s.stats.log[0].response.status, 200);
 }
 
 // --- Bearer inbound auth tests ---

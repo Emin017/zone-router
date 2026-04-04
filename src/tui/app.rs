@@ -29,6 +29,7 @@ pub enum InputMode {
     EditModelMap,
     Search,
     ShowToken,
+    DetailView,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,8 +57,11 @@ pub struct TuiState {
     pub pending_token: String,
     pub search_query: String,
     pub g_pressed: bool,
+    pub log_cursor: usize,
     pub log_scroll: usize,
     pub focus: FocusPanel,
+    pub detail_scroll: usize,
+    pub body_expanded: bool,
     pub auth_type_rejected: bool,
     pub model_map_rejected: bool,
     pub pending_auth_type: Option<crate::config::AuthType>,
@@ -74,8 +78,11 @@ impl Default for TuiState {
             pending_token: String::new(),
             search_query: String::new(),
             g_pressed: false,
+            log_cursor: 0,
             log_scroll: 0,
             focus: FocusPanel::Backends,
+            detail_scroll: 0,
+            body_expanded: false,
             auth_type_rejected: false,
             model_map_rejected: false,
             pending_auth_type: None,

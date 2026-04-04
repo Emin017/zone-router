@@ -3,14 +3,34 @@ use std::collections::{HashMap, VecDeque};
 
 const MAX_LOG_ENTRIES: usize = 1000;
 
+/// Ordered collection of HTTP header name-value pairs.
+#[derive(Debug, Clone, Default)]
+pub struct HeaderPairs(pub Vec<(String, String)>);
+
+/// Captured HTTP request data.
+#[derive(Debug, Clone)]
+pub struct CapturedRequest {
+    pub method: String,
+    pub path: String,
+    pub headers: HeaderPairs,
+    pub body: Option<String>,
+}
+
+/// Captured HTTP response data.
+#[derive(Debug, Clone)]
+pub struct CapturedResponse {
+    pub status: u16,
+    pub headers: HeaderPairs,
+    pub body: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RequestLogEntry {
     pub timestamp: DateTime<Utc>,
     pub backend: String,
-    pub method: String,
-    pub path: String,
-    pub status: u16,
     pub latency_ms: u64,
+    pub request: CapturedRequest,
+    pub response: CapturedResponse,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -61,7 +81,7 @@ impl StatsCollector {
         self.per_backend
             .entry(entry.backend.clone())
             .or_default()
-            .record(entry.status, entry.latency_ms);
+            .record(entry.response.status, entry.latency_ms);
         if self.log.len() >= MAX_LOG_ENTRIES {
             self.log.pop_front();
         }
@@ -98,18 +118,36 @@ mod tests {
         assert_eq!(BackendStats::default().avg_latency_ms(), 0.0);
     }
 
+    fn test_entry(
+        backend: &str,
+        method: &str,
+        path: &str,
+        status: u16,
+        latency_ms: u64,
+    ) -> RequestLogEntry {
+        RequestLogEntry {
+            timestamp: Utc::now(),
+            backend: backend.into(),
+            latency_ms,
+            request: CapturedRequest {
+                method: method.into(),
+                path: path.into(),
+                headers: HeaderPairs::default(),
+                body: None,
+            },
+            response: CapturedResponse {
+                status,
+                headers: HeaderPairs::default(),
+                body: None,
+            },
+        }
+    }
+
     #[test]
     fn stats_collector_caps_at_max() {
         let mut collector = StatsCollector::default();
         for i in 0..1100 {
-            collector.record(RequestLogEntry {
-                timestamp: Utc::now(),
-                backend: "test".into(),
-                method: "POST".into(),
-                path: "/v1/messages".into(),
-                status: 200,
-                latency_ms: i,
-            });
+            collector.record(test_entry("test", "POST", "/v1/messages", 200, i));
         }
         assert_eq!(collector.log.len(), MAX_LOG_ENTRIES);
         assert_eq!(collector.log.front().unwrap().latency_ms, 100);
@@ -118,22 +156,8 @@ mod tests {
     #[test]
     fn stats_collector_tracks_per_backend() {
         let mut collector = StatsCollector::default();
-        collector.record(RequestLogEntry {
-            timestamp: Utc::now(),
-            backend: "a".into(),
-            method: "POST".into(),
-            path: "/".into(),
-            status: 200,
-            latency_ms: 100,
-        });
-        collector.record(RequestLogEntry {
-            timestamp: Utc::now(),
-            backend: "b".into(),
-            method: "POST".into(),
-            path: "/".into(),
-            status: 500,
-            latency_ms: 50,
-        });
+        collector.record(test_entry("a", "POST", "/", 200, 100));
+        collector.record(test_entry("b", "POST", "/", 500, 50));
         assert_eq!(collector.per_backend["a"].success_count, 1);
         assert_eq!(collector.per_backend["b"].error_count, 1);
     }
