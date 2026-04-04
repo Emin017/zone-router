@@ -2512,5 +2512,6 @@ dependencies = [
  "tokio-stream",
  "toml",
  "tower",
+ "unicode-width 0.2.0",
  "uuid",
 ]

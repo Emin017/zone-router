@@ -1092,3 +1092,89 @@ async fn sse_over_20_events_truncates_with_marker() {
         "should not contain events beyond the 20th, got: {body}"
     );
 }
+
+#[tokio::test]
+async fn sse_multi_data_line_event_counts_as_one() {
+    // A single SSE event can have multiple data: lines.
+    // Each event is delimited by a blank line (\n\n).
+    // We need 25 events where each has 3 data: lines — still only 25 logical events.
+    let app = Router::new().route(
+        "/v1/messages",
+        post(|| async {
+            let mut raw = String::new();
+            for i in 0..25 {
+                // Each event has 3 data: lines but is one logical event
+                raw.push_str(&format!(
+                    "data: line-a-{i}\ndata: line-b-{i}\ndata: line-c-{i}\n\n"
+                ));
+            }
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                raw,
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let state = make_state(
+        vec![("sse-multi", &format!("http://{addr}"), "tok")],
+        "secret",
+    );
+    let router = zone_router::proxy::server::build_router(state.clone());
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let _body = axum::body::to_bytes(resp.into_body(), 10 * 1024 * 1024)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let s = state.read().await;
+    assert_eq!(s.stats.log.len(), 1);
+    let entry = &s.stats.log[0];
+    let body = entry.response.body.as_deref().unwrap();
+
+    // First event should be fully captured (all 3 data: lines)
+    assert!(
+        body.contains("line-a-0"),
+        "first event's first data line should be present, got: {body}"
+    );
+    assert!(
+        body.contains("line-c-0"),
+        "first event's last data line should be present, got: {body}"
+    );
+
+    // Event 19 (0-indexed) should be captured (the 20th event)
+    assert!(
+        body.contains("line-a-19"),
+        "20th event should be captured, got: {body}"
+    );
+
+    // Event 20 (the 21st) should NOT be in the buffer
+    assert!(
+        !body.contains("line-a-20"),
+        "21st event should NOT be captured, got: {body}"
+    );
+
+    // Should have truncation marker with 25 total events (not 75 data: lines)
+    assert!(
+        body.contains("truncated"),
+        "should have truncation marker, got: {body}"
+    );
+    assert!(
+        body.contains("25 events total"),
+        "should count 25 logical events, not 75 data: markers, got: {body}"
+    );
+}

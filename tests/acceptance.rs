@@ -2573,4 +2573,355 @@ mod tui_tests {
             );
         }
     }
+
+    // --- Render tests using TestBackend ---
+
+    fn make_app_state_with_log(
+        dir: &tempfile::TempDir,
+    ) -> std::sync::Arc<tokio::sync::RwLock<zone_router::state::AppState>> {
+        let config = zone_router::config::Config {
+            proxy: zone_router::config::ProxyConfig {
+                listen: "127.0.0.1:8080".into(),
+                local_token: "sk-local-test".into(),
+            },
+            backends: vec![zone_router::config::Backend {
+                name: "openai".into(),
+                url: "http://openai".into(),
+                token: "tok".into(),
+                active: true,
+                auth_type: zone_router::config::AuthType::default(),
+                model_map: None,
+            }],
+        };
+        let mut app =
+            zone_router::state::AppState::new(config, dir.path().join("render.toml")).unwrap();
+        app.stats.record(zone_router::stats::RequestLogEntry {
+            timestamp: chrono::Utc::now(),
+            backend: "openai".into(),
+            latency_ms: 245,
+            request: zone_router::stats::CapturedRequest {
+                method: "POST".into(),
+                path: "/v1/messages".into(),
+                headers: zone_router::stats::HeaderPairs(vec![(
+                    "content-type".into(),
+                    "application/json".into(),
+                )]),
+                body: Some(r#"{"model":"claude"}"#.into()),
+            },
+            response: zone_router::stats::CapturedResponse {
+                status: 200,
+                headers: zone_router::stats::HeaderPairs(vec![(
+                    "content-type".into(),
+                    "application/json".into(),
+                )]),
+                body: Some(r#"{"id":"msg_123","type":"message"}"#.into()),
+            },
+        });
+        std::sync::Arc::new(tokio::sync::RwLock::new(app))
+    }
+
+    fn render_to_string(
+        state: &zone_router::state::AppState,
+        tui: &TuiState,
+        width: u16,
+        height: u16,
+    ) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| zone_router::tui::ui::draw(frame, state, tui))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let mut output = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                let cell = &buffer[(x, y)];
+                output.push_str(cell.symbol());
+            }
+            output.push('\n');
+        }
+        output
+    }
+
+    #[test]
+    fn render_normal_mode_shows_request_log_and_help_bar() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_arc = make_app_state_with_log(&dir);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let state = rt.block_on(state_arc.read()).clone();
+        let tui = TuiState {
+            focus: FocusPanel::RequestLog,
+            ..TuiState::default()
+        };
+
+        let output = render_to_string(&state, &tui, 100, 30);
+
+        assert!(
+            output.contains("Request Log"),
+            "should show Request Log title"
+        );
+        assert!(output.contains("POST"), "should show request method");
+        assert!(output.contains("/v1/messages"), "should show request path");
+        assert!(
+            output.contains("[1-9] switch"),
+            "Normal help bar should show switch key"
+        );
+        assert!(
+            output.contains("[q] quit"),
+            "Normal help bar should show quit key"
+        );
+        assert!(
+            !output.contains("Request Detail"),
+            "should NOT show detail panel in Normal mode"
+        );
+    }
+
+    #[test]
+    fn render_detail_view_shows_floating_panel_with_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_arc = make_app_state_with_log(&dir);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let state = rt.block_on(state_arc.read()).clone();
+        let tui = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::DetailView,
+            log_cursor: 0,
+            ..TuiState::default()
+        };
+
+        let output = render_to_string(&state, &tui, 100, 50);
+
+        // Panel title
+        assert!(
+            output.contains("Request Detail"),
+            "should show detail panel title, got:\n{output}"
+        );
+
+        // Underlying log should still be partially visible
+        assert!(
+            output.contains("Request Log"),
+            "log title should be visible around panel edges"
+        );
+
+        // Panel content sections
+        assert!(
+            output.contains("Backend:"),
+            "panel should display Backend field"
+        );
+        assert!(
+            output.contains("openai"),
+            "panel should display backend name"
+        );
+        assert!(
+            output.contains("Method:"),
+            "panel should display Method field"
+        );
+        assert!(output.contains("POST"), "panel should display method value");
+        assert!(output.contains("/v1/messages"), "panel should display path");
+        assert!(
+            output.contains("Status:"),
+            "panel should display Status field"
+        );
+        assert!(output.contains("200"), "panel should display status value");
+        assert!(
+            output.contains("Latency:"),
+            "panel should display Latency field"
+        );
+        assert!(
+            output.contains("Request Headers"),
+            "panel should display Request Headers section"
+        );
+        assert!(
+            output.contains("content-type"),
+            "panel should display captured header"
+        );
+        assert!(
+            output.contains("Request Body"),
+            "panel should display Request Body section"
+        );
+        assert!(
+            output.contains("Response Headers"),
+            "panel should display Response Headers section"
+        );
+        assert!(
+            output.contains("Response Body"),
+            "panel should display Response Body section"
+        );
+    }
+
+    #[test]
+    fn render_detail_view_help_bar_shows_detail_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_arc = make_app_state_with_log(&dir);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let state = rt.block_on(state_arc.read()).clone();
+        let tui = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::DetailView,
+            log_cursor: 0,
+            ..TuiState::default()
+        };
+
+        let output = render_to_string(&state, &tui, 100, 30);
+
+        // Help bar should show DetailView keys
+        assert!(
+            output.contains("[j/k] scroll"),
+            "DetailView help bar should show scroll keys"
+        );
+        assert!(
+            output.contains("[Esc/h] close"),
+            "DetailView help bar should show close keys"
+        );
+        assert!(
+            output.contains("[n/p] next/prev"),
+            "DetailView help bar should show next/prev keys"
+        );
+        // Should NOT show Normal mode keys
+        assert!(
+            !output.contains("[q] quit"),
+            "DetailView help bar should NOT show Normal quit key"
+        );
+        assert!(
+            !output.contains("[a] add"),
+            "DetailView help bar should NOT show Normal add key"
+        );
+    }
+
+    #[test]
+    fn render_help_bar_restores_normal_keys_after_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_arc = make_app_state_with_log(&dir);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let state = rt.block_on(state_arc.read()).clone();
+
+        // First verify DetailView
+        let tui_detail = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::DetailView,
+            log_cursor: 0,
+            ..TuiState::default()
+        };
+        let output_detail = render_to_string(&state, &tui_detail, 100, 30);
+        assert!(output_detail.contains("[Esc/h] close"));
+
+        // Now verify Normal after closing
+        let tui_normal = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::Normal,
+            log_cursor: 0,
+            ..TuiState::default()
+        };
+        let output_normal = render_to_string(&state, &tui_normal, 100, 30);
+        assert!(
+            output_normal.contains("[q] quit"),
+            "Normal help bar should be restored after close"
+        );
+        assert!(
+            !output_normal.contains("[Esc/h] close"),
+            "DetailView keys should be gone after close"
+        );
+    }
+
+    #[test]
+    fn render_request_body_collapsed_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_arc = make_app_state_with_log(&dir);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let state = rt.block_on(state_arc.read()).clone();
+
+        // Collapsed (default)
+        let tui_collapsed = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::DetailView,
+            log_cursor: 0,
+            body_expanded: false,
+            ..TuiState::default()
+        };
+        let output = render_to_string(&state, &tui_collapsed, 100, 40);
+        assert!(
+            output.contains("▸ Request Body"),
+            "collapsed body should show ▸ marker"
+        );
+        assert!(
+            output.contains("bytes"),
+            "collapsed body should show byte count"
+        );
+
+        // Expanded
+        let tui_expanded = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::DetailView,
+            log_cursor: 0,
+            body_expanded: true,
+            ..TuiState::default()
+        };
+        let output = render_to_string(&state, &tui_expanded, 100, 40);
+        assert!(
+            output.contains("▾ Request Body"),
+            "expanded body should show ▾ marker"
+        );
+        assert!(
+            output.contains("claude"),
+            "expanded body should show body content"
+        );
+    }
+
+    #[test]
+    fn render_non_ascii_body_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = zone_router::config::Config {
+            proxy: zone_router::config::ProxyConfig {
+                listen: "127.0.0.1:0".into(),
+                local_token: "tok".into(),
+            },
+            backends: vec![zone_router::config::Backend {
+                name: "test".into(),
+                url: "http://test".into(),
+                token: "t".into(),
+                active: true,
+                auth_type: zone_router::config::AuthType::default(),
+                model_map: None,
+            }],
+        };
+        let mut app =
+            zone_router::state::AppState::new(config, dir.path().join("unicode.toml")).unwrap();
+        app.stats.record(zone_router::stats::RequestLogEntry {
+            timestamp: chrono::Utc::now(),
+            backend: "test".into(),
+            latency_ms: 10,
+            request: zone_router::stats::CapturedRequest {
+                method: "POST".into(),
+                path: "/api".into(),
+                headers: zone_router::stats::HeaderPairs(vec![(
+                    "x-custom".into(),
+                    "日本語ヘッダー".into(),
+                )]),
+                body: Some("こんにちは世界🌍".into()),
+            },
+            response: zone_router::stats::CapturedResponse {
+                status: 200,
+                headers: zone_router::stats::HeaderPairs::default(),
+                body: Some("Ÿéponse avéc dés àccents et emoji 🚀✨".into()),
+            },
+        });
+
+        let tui = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::DetailView,
+            log_cursor: 0,
+            body_expanded: true,
+            ..TuiState::default()
+        };
+
+        // This should not panic even with multibyte characters
+        let output = render_to_string(&app, &tui, 60, 40);
+        assert!(
+            output.contains("Request Detail"),
+            "panel should render with non-ASCII content"
+        );
+    }
 }

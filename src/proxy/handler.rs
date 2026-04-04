@@ -76,11 +76,13 @@ fn extract_header_pairs(headers: &HeaderMap) -> HeaderPairs {
 
 const MAX_SSE_EVENTS: usize = 20;
 
-/// A stream wrapper that sends a signal with buffered SSE body when dropped.
+/// A stream wrapper that buffers the first N SSE events and signals completion on drop.
 struct SseBufferingStream<S> {
     inner: S,
     done_tx: Option<tokio::sync::oneshot::Sender<Option<String>>>,
     buffer: String,
+    /// Partial text carried over from the previous chunk (not yet terminated by a blank line).
+    carry: String,
     event_count: usize,
 }
 
@@ -94,25 +96,19 @@ where
         let poll = Pin::new(&mut self.inner).poll_next(cx);
         if let Poll::Ready(Some(Ok(ref chunk))) = poll {
             let text = std::str::from_utf8(chunk).unwrap_or("");
-            // Scan for "data:" markers and only buffer content belonging
-            // to the first MAX_SSE_EVENTS events.
-            let mut remaining = text;
-            while !remaining.is_empty() {
-                if let Some(pos) = remaining.find("data:") {
-                    // Everything before and including this "data:" marker
-                    let event_start = pos + "data:".len();
-                    if self.event_count < MAX_SSE_EVENTS {
-                        self.buffer.push_str(&remaining[..event_start]);
-                    }
-                    self.event_count += 1;
-                    remaining = &remaining[event_start..];
-                } else {
-                    // No more markers in this chunk — buffer trailing text
-                    // only if we're still under the cap
-                    if self.event_count <= MAX_SSE_EVENTS {
-                        self.buffer.push_str(remaining);
-                    }
-                    break;
+            self.carry.push_str(text);
+
+            // SSE events are delimited by blank lines (\n\n).
+            // Split on \n\n to find complete events; the last segment
+            // is carried over as a partial event until the next chunk.
+            while let Some(pos) = self.carry.find("\n\n") {
+                let event_end = pos + 2; // include the \n\n
+                let event = self.carry[..event_end].to_owned();
+                self.carry = self.carry[event_end..].to_owned();
+
+                self.event_count += 1;
+                if self.event_count <= MAX_SSE_EVENTS {
+                    self.buffer.push_str(&event);
                 }
             }
         }
@@ -122,11 +118,20 @@ where
 
 impl<S> Drop for SseBufferingStream<S> {
     fn drop(&mut self) {
+        // Flush any remaining carry as a final partial event.
+        if !self.carry.is_empty() {
+            self.event_count += 1;
+            if self.event_count <= MAX_SSE_EVENTS {
+                self.buffer.push_str(&self.carry);
+            }
+        }
+
         if let Some(tx) = self.done_tx.take() {
             let body = if self.event_count > MAX_SSE_EVENTS {
                 Some(format!(
                     "{}\n... (truncated, {} events total)",
-                    self.buffer, self.event_count
+                    self.buffer.trim_end(),
+                    self.event_count
                 ))
             } else if self.buffer.is_empty() {
                 None
@@ -276,6 +281,7 @@ pub async fn proxy_handler(
                     inner: resp.bytes_stream(),
                     done_tx: Some(done_tx),
                     buffer: String::new(),
+                    carry: String::new(),
                     event_count: 0,
                 };
                 let body = Body::from_stream(wrapped);

@@ -200,22 +200,34 @@ fn centered_rect(area: Rect, width_pct: u16, height_pct: u16) -> Rect {
     Rect::new(x, y, w, h)
 }
 
+use unicode_width::UnicodeWidthChar;
+
 fn wrap_text_lines(text: &str, prefix: &str, max_width: usize) -> Vec<Line<'static>> {
-    let usable = max_width.saturating_sub(prefix.len());
+    let prefix_width: usize = prefix.chars().map(|c| c.width().unwrap_or(0)).sum();
+    let usable = max_width.saturating_sub(prefix_width);
     if usable == 0 {
         return vec![Line::from(format!("{prefix}{text}"))];
     }
     let mut result = Vec::new();
     for line in text.lines() {
-        if line.len() <= usable {
+        let line_width: usize = line.chars().map(|c| c.width().unwrap_or(0)).sum();
+        if line_width <= usable {
             result.push(Line::from(format!("{prefix}{line}")));
         } else {
-            let mut pos = 0;
-            while pos < line.len() {
-                let end = (pos + usable).min(line.len());
-                let chunk = &line[pos..end];
-                result.push(Line::from(format!("{prefix}{chunk}")));
-                pos = end;
+            let mut current = String::new();
+            let mut current_width = 0usize;
+            for ch in line.chars() {
+                let ch_width = ch.width().unwrap_or(0);
+                if current_width + ch_width > usable && !current.is_empty() {
+                    result.push(Line::from(format!("{prefix}{current}")));
+                    current.clear();
+                    current_width = 0;
+                }
+                current.push(ch);
+                current_width += ch_width;
+            }
+            if !current.is_empty() {
+                result.push(Line::from(format!("{prefix}{current}")));
             }
         }
     }
