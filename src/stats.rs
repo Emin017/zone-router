@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_LOG_ENTRIES: usize = 500;
 const MAX_BODY_PREVIEW: usize = 4096;
