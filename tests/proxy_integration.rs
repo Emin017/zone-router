@@ -1247,3 +1247,82 @@ async fn sse_crlf_delimited_events_counted_correctly() {
         "should count 25 CRLF events, got: {body}"
     );
 }
+
+#[tokio::test]
+async fn sse_multibyte_utf8_split_across_chunks_preserved() {
+    use axum::response::IntoResponse;
+
+    // Build an SSE stream that deliberately splits a multibyte UTF-8 character
+    // across chunk boundaries. The emoji 🌍 is 4 bytes: [0xF0, 0x9F, 0x8C, 0x8D].
+    // We split it between bytes 2 and 3 to force the raw-byte parser to reassemble.
+    let app = Router::new().route(
+        "/v1/messages",
+        post(|| async {
+            let emoji = "🌍";
+            let emoji_bytes = emoji.as_bytes(); // [0xF0, 0x9F, 0x8C, 0x8D]
+
+            // Chunk 1: "data: hello-" + first half of emoji
+            let mut chunk1 = b"data: hello-".to_vec();
+            chunk1.extend_from_slice(&emoji_bytes[..2]);
+
+            // Chunk 2: second half of emoji + "\n\n" (completing the event)
+            let mut chunk2 = emoji_bytes[2..].to_vec();
+            chunk2.extend_from_slice(b"\n\n");
+
+            // Add a second simple event for good measure
+            let chunk3 = b"data: world\n\n".to_vec();
+
+            let chunks = vec![
+                Ok::<_, std::io::Error>(bytes::Bytes::from(chunk1)),
+                Ok(bytes::Bytes::from(chunk2)),
+                Ok(bytes::Bytes::from(chunk3)),
+            ];
+
+            let body = axum::body::Body::from_stream(futures_util::stream::iter(chunks));
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                body,
+            )
+                .into_response()
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let state = make_state(
+        vec![("sse-utf8", &format!("http://{addr}"), "tok")],
+        "secret",
+    );
+    let router = zone_router::proxy::server::build_router(state.clone());
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let _body = axum::body::to_bytes(resp.into_body(), 10 * 1024 * 1024)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let s = state.read().await;
+    assert_eq!(s.stats.log.len(), 1);
+    let entry = &s.stats.log[0];
+    let body = entry.response.body.as_deref().unwrap();
+    assert!(
+        body.contains("hello-🌍"),
+        "split multibyte character should be preserved intact, got: {body}"
+    );
+    assert!(
+        body.contains("world"),
+        "subsequent event should also be captured, got: {body}"
+    );
+}

@@ -3092,4 +3092,303 @@ mod tui_tests {
             "over-scrolling should clamp and still show tail content"
         );
     }
+
+    #[test]
+    fn render_popup_exact_centered_geometry() {
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::{Constraint, Direction, Layout};
+        use ratatui::Terminal;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state_arc = make_app_state_with_log(&dir);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let state = rt.block_on(state_arc.read()).clone();
+        let tui = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::DetailView,
+            log_cursor: 0,
+            ..TuiState::default()
+        };
+
+        let width: u16 = 100;
+        let height: u16 = 50;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| zone_router::tui::ui::draw(frame, &state, &tui))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        // Compute the expected Request Log area using the same layout constraints
+        let frame_area = ratatui::layout::Rect::new(0, 0, width, height);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(6),
+                Constraint::Min(8),
+                Constraint::Length(3),
+            ])
+            .split(frame_area);
+        let log_area = chunks[2];
+
+        // Compute exact centered popup rect (~80% width, ~90% height of log area)
+        let popup_w = log_area.width * 80 / 100;
+        let popup_h = log_area.height * 90 / 100;
+        let popup_x = log_area.x + (log_area.width.saturating_sub(popup_w)) / 2;
+        let popup_y = log_area.y + (log_area.height.saturating_sub(popup_h)) / 2;
+
+        // Assert top-left border corner
+        let tl_sym = buffer[(popup_x, popup_y)].symbol();
+        assert_eq!(
+            tl_sym, "┌",
+            "top-left corner at ({popup_x},{popup_y}) should be ┌, got {tl_sym}"
+        );
+
+        // Assert top-right border corner
+        let tr_x = popup_x + popup_w - 1;
+        let tr_sym = buffer[(tr_x, popup_y)].symbol();
+        assert_eq!(
+            tr_sym, "┐",
+            "top-right corner at ({tr_x},{popup_y}) should be ┐, got {tr_sym}"
+        );
+
+        // Assert bottom-left border corner
+        let bl_y = popup_y + popup_h - 1;
+        let bl_sym = buffer[(popup_x, bl_y)].symbol();
+        assert_eq!(
+            bl_sym, "└",
+            "bottom-left corner at ({popup_x},{bl_y}) should be └, got {bl_sym}"
+        );
+
+        // Assert bottom-right border corner
+        let br_sym = buffer[(tr_x, bl_y)].symbol();
+        assert_eq!(
+            br_sym, "┘",
+            "bottom-right corner at ({tr_x},{bl_y}) should be ┘, got {br_sym}"
+        );
+
+        // Verify title is on the top border row
+        let mut title_row = String::new();
+        for x in popup_x..popup_x + popup_w {
+            title_row.push_str(buffer[(x, popup_y)].symbol());
+        }
+        assert!(
+            title_row.contains("Request Detail"),
+            "title row should contain 'Request Detail', got: {title_row}"
+        );
+
+        // Verify log content is visible OUTSIDE the popup (e.g. the log title row)
+        let mut log_title_row = String::new();
+        for x in 0..width {
+            log_title_row.push_str(buffer[(x, log_area.y)].symbol());
+        }
+        assert!(
+            log_title_row.contains("Request Log"),
+            "Request Log title should be visible outside the popup"
+        );
+    }
+
+    #[test]
+    fn render_long_non_ascii_scroll_reachability() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = zone_router::config::Config {
+            proxy: zone_router::config::ProxyConfig {
+                listen: "127.0.0.1:0".into(),
+                local_token: "tok".into(),
+            },
+            backends: vec![zone_router::config::Backend {
+                name: "test".into(),
+                url: "http://test".into(),
+                token: "t".into(),
+                active: true,
+                auth_type: zone_router::config::AuthType::default(),
+                model_map: None,
+            }],
+        };
+        let mut app =
+            zone_router::state::AppState::new(config, dir.path().join("unicode-scroll.toml"))
+                .unwrap();
+
+        let mut long_body = String::new();
+        for i in 0..80 {
+            long_body.push_str(&format!("行-{i}: こんにちは世界🌍データ\n"));
+        }
+        long_body.push_str("UTAIL");
+
+        app.stats.record(zone_router::stats::RequestLogEntry {
+            timestamp: chrono::Utc::now(),
+            backend: "test".into(),
+            latency_ms: 10,
+            request: zone_router::stats::CapturedRequest {
+                method: "GET".into(),
+                path: "/api".into(),
+                headers: zone_router::stats::HeaderPairs::default(),
+                body: None,
+            },
+            response: zone_router::stats::CapturedResponse {
+                status: 200,
+                headers: zone_router::stats::HeaderPairs::default(),
+                body: Some(long_body),
+            },
+        });
+
+        let width: u16 = 80;
+        let height: u16 = 40;
+
+        // At scroll=0, the tail marker should NOT be visible
+        let tui_top = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::DetailView,
+            log_cursor: 0,
+            detail_scroll: 0,
+            ..TuiState::default()
+        };
+        let output_top = render_to_string(&app, &tui_top, width, height);
+        assert!(
+            !output_top.contains("UTAIL"),
+            "non-ASCII tail should NOT be visible at scroll=0"
+        );
+
+        // At a large scroll value, the tail marker SHOULD be visible
+        let tui_bottom = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::DetailView,
+            log_cursor: 0,
+            detail_scroll: 300,
+            ..TuiState::default()
+        };
+        let output_bottom = render_to_string(&app, &tui_bottom, width, height);
+        assert!(
+            output_bottom.contains("UTAIL"),
+            "non-ASCII tail should be visible when scrolled to bottom"
+        );
+
+        // Over-scroll should clamp and still show the tail
+        let tui_clamped = TuiState {
+            focus: FocusPanel::RequestLog,
+            mode: InputMode::DetailView,
+            log_cursor: 0,
+            detail_scroll: 9999,
+            ..TuiState::default()
+        };
+        let output_clamped = render_to_string(&app, &tui_clamped, width, height);
+        assert!(
+            output_clamped.contains("UTAIL"),
+            "over-scrolling non-ASCII content should clamp and still show tail"
+        );
+    }
+
+    #[test]
+    fn render_log_auto_scroll_and_highlight() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = zone_router::config::Config {
+            proxy: zone_router::config::ProxyConfig {
+                listen: "127.0.0.1:0".into(),
+                local_token: "tok".into(),
+            },
+            backends: vec![zone_router::config::Backend {
+                name: "test".into(),
+                url: "http://test".into(),
+                token: "t".into(),
+                active: true,
+                auth_type: zone_router::config::AuthType::default(),
+                model_map: None,
+            }],
+        };
+        let mut app =
+            zone_router::state::AppState::new(config, dir.path().join("autoscroll.toml")).unwrap();
+
+        // Add 30 log entries so they exceed the viewport
+        for i in 0..30 {
+            app.stats.record(zone_router::stats::RequestLogEntry {
+                timestamp: chrono::Utc::now(),
+                backend: format!("backend-{i}"),
+                latency_ms: i as u64,
+                request: zone_router::stats::CapturedRequest {
+                    method: "POST".into(),
+                    path: format!("/path-{i}"),
+                    headers: zone_router::stats::HeaderPairs::default(),
+                    body: None,
+                },
+                response: zone_router::stats::CapturedResponse {
+                    status: 200,
+                    headers: zone_router::stats::HeaderPairs::default(),
+                    body: None,
+                },
+            });
+        }
+
+        let width: u16 = 100;
+        let height: u16 = 30;
+
+        // Cursor at 0: newest entry (backend-29) should be at or near the top
+        // and the cursor marker ">" should be visible
+        let tui_top = TuiState {
+            focus: FocusPanel::RequestLog,
+            log_cursor: 0,
+            ..TuiState::default()
+        };
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| zone_router::tui::ui::draw(frame, &app, &tui_top))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut output_top = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                output_top.push_str(buf[(x, y)].symbol());
+            }
+            output_top.push('\n');
+        }
+        assert!(
+            output_top.contains("backend-29"),
+            "newest entry should be visible at cursor=0"
+        );
+        assert!(
+            output_top.contains(">"),
+            "cursor marker should be visible at cursor=0"
+        );
+
+        // Move cursor to 25 (deep into the list): backend-4 is the 25th from newest
+        // The selected entry should be visible and older entries near top should scroll out
+        let tui_deep = TuiState {
+            focus: FocusPanel::RequestLog,
+            log_cursor: 25,
+            ..TuiState::default()
+        };
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| zone_router::tui::ui::draw(frame, &app, &tui_deep))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut output_deep = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                output_deep.push_str(buf[(x, y)].symbol());
+            }
+            output_deep.push('\n');
+        }
+
+        // The selected entry (backend-4, which is log_cursor=25 counting from newest) should be visible
+        assert!(
+            output_deep.contains("backend-4"),
+            "selected entry backend-4 should be visible when cursor is at 25"
+        );
+        // The newest entry (backend-29) should have scrolled out of view
+        assert!(
+            !output_deep.contains("backend-29"),
+            "newest entry should have scrolled out when cursor is deep in the list"
+        );
+        // The cursor marker ">" should still be visible for the selected row
+        assert!(
+            output_deep.contains(">"),
+            "cursor marker should be visible for the selected row"
+        );
+    }
 }
