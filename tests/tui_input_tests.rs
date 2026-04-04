@@ -1201,17 +1201,12 @@ fn make_tui_with_log() -> (
                 chrono::Utc::now(),
                 "test".into(),
                 i * 10,
-                zone_router::stats::CapturedRequest {
-                    method: "POST".into(),
-                    path: "/v1/messages".into(),
-                    headers: zone_router::stats::HeaderPairs::default(),
-                    body: Some(format!("body-{i}")),
-                },
-                zone_router::stats::CapturedResponse {
-                    status: 200,
-                    headers: zone_router::stats::HeaderPairs::default(),
-                    body: Some(format!("resp-{i}")),
-                },
+                "POST".into(),
+                "/v1/messages".into(),
+                200,
+                Some("claude-sonnet-4-20250514".into()),
+                zone_router::stats::TransferType::Json,
+                None,
             ));
         }
     }
@@ -1257,7 +1252,6 @@ fn enter_opens_detail_view_from_request_log() {
     zone_router::tui::input::handle_input(key(KeyCode::Enter), &mut tui, &state, rt.handle());
     assert_eq!(tui.mode, InputMode::DetailView);
     assert_eq!(tui.detail_scroll, 0);
-    assert!(!tui.body_expanded);
 }
 
 #[test]
@@ -1303,19 +1297,6 @@ fn detail_view_j_k_scrolls() {
         rt.handle(),
     );
     assert_eq!(tui.detail_scroll, 0);
-}
-
-#[test]
-fn detail_view_enter_toggles_body() {
-    let (mut tui, state, rt, _dir) = make_tui_with_log();
-    tui.mode = InputMode::DetailView;
-    assert!(!tui.body_expanded);
-
-    zone_router::tui::input::handle_input_mode(key(KeyCode::Enter), &mut tui, &state, rt.handle());
-    assert!(tui.body_expanded);
-
-    zone_router::tui::input::handle_input_mode(key(KeyCode::Enter), &mut tui, &state, rt.handle());
-    assert!(!tui.body_expanded);
 }
 
 #[test]

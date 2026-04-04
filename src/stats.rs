@@ -42,6 +42,7 @@ pub struct RequestLogEntry {
 }
 
 impl RequestLogEntry {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         timestamp: DateTime<Utc>,
         backend: String,

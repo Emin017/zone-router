@@ -30,6 +30,7 @@ std::thread_local! {
     static CLIENT: reqwest::Client = build_client();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_log_entry(
     backend: &str,
     start: Instant,

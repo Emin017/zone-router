@@ -23,23 +23,15 @@ fn make_app_state_with_log(
         chrono::Utc::now(),
         "openai".into(),
         245,
-        zone_router::stats::CapturedRequest {
-            method: "POST".into(),
-            path: "/v1/messages".into(),
-            headers: zone_router::stats::HeaderPairs(vec![(
-                "content-type".into(),
-                "application/json".into(),
-            )]),
-            body: Some(r#"{"model":"claude"}"#.into()),
-        },
-        zone_router::stats::CapturedResponse {
-            status: 200,
-            headers: zone_router::stats::HeaderPairs(vec![(
-                "content-type".into(),
-                "application/json".into(),
-            )]),
-            body: Some(r#"{"id":"msg_123","type":"message"}"#.into()),
-        },
+        "POST".into(),
+        "/v1/messages".into(),
+        200,
+        Some("claude-sonnet-4-20250514".into()),
+        zone_router::stats::TransferType::Json,
+        Some(zone_router::stats::TokenUsage {
+            input_tokens: 42,
+            output_tokens: 137,
+        }),
     ));
     std::sync::Arc::new(tokio::sync::RwLock::new(app))
 }
@@ -109,75 +101,29 @@ fn render_detail_view_shows_floating_panel_with_content() {
     let state_arc = make_app_state_with_log(&dir);
     let rt = tokio::runtime::Runtime::new().unwrap();
     let state = rt.block_on(state_arc.read()).clone();
+    let entry_id = state.stats.log[0].id;
     let tui = TuiState {
-        focus: FocusPanel::RequestLog,
         mode: InputMode::DetailView,
-        log_cursor: 0,
+        focus: FocusPanel::RequestLog,
+        detail_entry_id: Some(entry_id),
+        log_cursor_id: Some(entry_id),
         ..TuiState::default()
     };
 
-    let output = render_to_string(&state, &tui, 100, 50);
+    let output = render_to_string(&state, &tui, 100, 40);
 
-    // Panel title
+    assert!(output.contains("Request Detail"), "should show panel title");
+    assert!(output.contains("POST"), "should show method");
+    assert!(output.contains("/v1/messages"), "should show path");
+    assert!(output.contains("200"), "should show status");
+    assert!(output.contains("245ms"), "should show latency");
     assert!(
-        output.contains("Request Detail"),
-        "should show detail panel title, got:\n{output}"
+        output.contains("claude-sonnet-4-20250514"),
+        "should show model"
     );
-
-    // Underlying log should still be partially visible
-    assert!(
-        output.contains("Request Log"),
-        "log title should be visible around panel edges"
-    );
-
-    // Panel content sections
-    assert!(
-        output.contains("Timestamp:"),
-        "panel should display Timestamp field"
-    );
-    assert!(
-        output.contains("Backend:"),
-        "panel should display Backend field"
-    );
-    assert!(
-        output.contains("openai"),
-        "panel should display backend name"
-    );
-    assert!(
-        output.contains("Method:"),
-        "panel should display Method field"
-    );
-    assert!(output.contains("POST"), "panel should display method value");
-    assert!(output.contains("/v1/messages"), "panel should display path");
-    assert!(
-        output.contains("Status:"),
-        "panel should display Status field"
-    );
-    assert!(output.contains("200"), "panel should display status value");
-    assert!(
-        output.contains("Latency:"),
-        "panel should display Latency field"
-    );
-    assert!(
-        output.contains("Request Headers"),
-        "panel should display Request Headers section"
-    );
-    assert!(
-        output.contains("content-type"),
-        "panel should display captured header"
-    );
-    assert!(
-        output.contains("Request Body"),
-        "panel should display Request Body section"
-    );
-    assert!(
-        output.contains("Response Headers"),
-        "panel should display Response Headers section"
-    );
-    assert!(
-        output.contains("Response Body"),
-        "panel should display Response Body section"
-    );
+    assert!(output.contains("JSON"), "should show transfer type");
+    assert!(output.contains("42"), "should show input tokens");
+    assert!(output.contains("137"), "should show output tokens");
 }
 
 #[test]
@@ -255,105 +201,6 @@ fn render_help_bar_restores_normal_keys_after_close() {
 }
 
 #[test]
-fn render_request_body_collapsed_by_default() {
-    let dir = tempfile::tempdir().unwrap();
-    let state_arc = make_app_state_with_log(&dir);
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let state = rt.block_on(state_arc.read()).clone();
-
-    // Collapsed (default)
-    let tui_collapsed = TuiState {
-        focus: FocusPanel::RequestLog,
-        mode: InputMode::DetailView,
-        log_cursor: 0,
-        body_expanded: false,
-        ..TuiState::default()
-    };
-    let output = render_to_string(&state, &tui_collapsed, 100, 40);
-    assert!(
-        output.contains("▸ Request Body"),
-        "collapsed body should show ▸ marker"
-    );
-    assert!(
-        output.contains("bytes"),
-        "collapsed body should show byte count"
-    );
-
-    // Expanded
-    let tui_expanded = TuiState {
-        focus: FocusPanel::RequestLog,
-        mode: InputMode::DetailView,
-        log_cursor: 0,
-        body_expanded: true,
-        ..TuiState::default()
-    };
-    let output = render_to_string(&state, &tui_expanded, 100, 40);
-    assert!(
-        output.contains("▾ Request Body"),
-        "expanded body should show ▾ marker"
-    );
-    assert!(
-        output.contains("claude"),
-        "expanded body should show body content"
-    );
-}
-
-#[test]
-fn render_non_ascii_body_does_not_panic() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = zone_router::config::Config {
-        proxy: zone_router::config::ProxyConfig {
-            listen: "127.0.0.1:0".into(),
-            local_token: "tok".into(),
-        },
-        backends: vec![zone_router::config::Backend {
-            name: "test".into(),
-            url: "http://test".into(),
-            token: "t".into(),
-            active: true,
-            auth_type: zone_router::config::AuthType::default(),
-            model_map: None,
-        }],
-    };
-    let mut app =
-        zone_router::state::AppState::new(config, dir.path().join("unicode.toml")).unwrap();
-    app.stats.record(zone_router::stats::RequestLogEntry::new(
-        chrono::Utc::now(),
-        "test".into(),
-        10,
-        zone_router::stats::CapturedRequest {
-            method: "POST".into(),
-            path: "/api".into(),
-            headers: zone_router::stats::HeaderPairs(vec![(
-                "x-custom".into(),
-                "日本語ヘッダー".into(),
-            )]),
-            body: Some("こんにちは世界🌍".into()),
-        },
-        zone_router::stats::CapturedResponse {
-            status: 200,
-            headers: zone_router::stats::HeaderPairs::default(),
-            body: Some("Ÿéponse avéc dés àccents et emoji 🚀✨".into()),
-        },
-    ));
-
-    let tui = TuiState {
-        focus: FocusPanel::RequestLog,
-        mode: InputMode::DetailView,
-        log_cursor: 0,
-        body_expanded: true,
-        ..TuiState::default()
-    };
-
-    // This should not panic even with multibyte characters
-    let output = render_to_string(&app, &tui, 60, 40);
-    assert!(
-        output.contains("Request Detail"),
-        "panel should render with non-ASCII content"
-    );
-}
-
-#[test]
 fn render_popup_geometry_is_centered_in_log_area() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -424,96 +271,6 @@ fn render_popup_geometry_is_centered_in_log_area() {
     assert!(
         margin_diff <= 5,
         "panel should be roughly centered, left_margin={left_margin}, right_margin={right_margin}"
-    );
-}
-
-#[test]
-fn render_scroll_reachability_for_long_body() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = zone_router::config::Config {
-        proxy: zone_router::config::ProxyConfig {
-            listen: "127.0.0.1:0".into(),
-            local_token: "tok".into(),
-        },
-        backends: vec![zone_router::config::Backend {
-            name: "test".into(),
-            url: "http://test".into(),
-            token: "t".into(),
-            active: true,
-            auth_type: zone_router::config::AuthType::default(),
-            model_map: None,
-        }],
-    };
-    let mut app =
-        zone_router::state::AppState::new(config, dir.path().join("scroll.toml")).unwrap();
-
-    // Create a long response body with a distinctive tail marker
-    let mut long_body = String::new();
-    for i in 0..100 {
-        long_body.push_str(&format!("line-{i}: some content here\n"));
-    }
-    long_body.push_str("TAIL_MARKER_END_OF_CONTENT");
-
-    app.stats.record(zone_router::stats::RequestLogEntry::new(
-        chrono::Utc::now(),
-        "test".into(),
-        10,
-        zone_router::stats::CapturedRequest {
-            method: "GET".into(),
-            path: "/api".into(),
-            headers: zone_router::stats::HeaderPairs::default(),
-            body: None,
-        },
-        zone_router::stats::CapturedResponse {
-            status: 200,
-            headers: zone_router::stats::HeaderPairs::default(),
-            body: Some(long_body),
-        },
-    ));
-
-    let width: u16 = 100;
-    let height: u16 = 40;
-
-    // At scroll=0, the tail marker should NOT be visible
-    let tui_top = TuiState {
-        focus: FocusPanel::RequestLog,
-        mode: InputMode::DetailView,
-        log_cursor: 0,
-        detail_scroll: 0,
-        ..TuiState::default()
-    };
-    let output_top = render_to_string(&app, &tui_top, width, height);
-    assert!(
-        !output_top.contains("TAIL_MARKER"),
-        "tail should NOT be visible at scroll=0"
-    );
-
-    // At a large scroll value, the tail marker SHOULD be visible
-    let tui_bottom = TuiState {
-        focus: FocusPanel::RequestLog,
-        mode: InputMode::DetailView,
-        log_cursor: 0,
-        detail_scroll: 200, // intentionally over-large; should clamp
-        ..TuiState::default()
-    };
-    let output_bottom = render_to_string(&app, &tui_bottom, width, height);
-    assert!(
-        output_bottom.contains("TAIL_MARKER"),
-        "tail should be visible when scrolled to bottom"
-    );
-
-    // Verify scroll clamping: scrolling beyond content should still show the tail
-    let tui_clamped = TuiState {
-        focus: FocusPanel::RequestLog,
-        mode: InputMode::DetailView,
-        log_cursor: 0,
-        detail_scroll: 9999,
-        ..TuiState::default()
-    };
-    let output_clamped = render_to_string(&app, &tui_clamped, width, height);
-    assert!(
-        output_clamped.contains("TAIL_MARKER"),
-        "over-scrolling should clamp and still show tail content"
     );
 }
 
@@ -614,95 +371,6 @@ fn render_popup_exact_centered_geometry() {
 }
 
 #[test]
-fn render_long_non_ascii_scroll_reachability() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = zone_router::config::Config {
-        proxy: zone_router::config::ProxyConfig {
-            listen: "127.0.0.1:0".into(),
-            local_token: "tok".into(),
-        },
-        backends: vec![zone_router::config::Backend {
-            name: "test".into(),
-            url: "http://test".into(),
-            token: "t".into(),
-            active: true,
-            auth_type: zone_router::config::AuthType::default(),
-            model_map: None,
-        }],
-    };
-    let mut app =
-        zone_router::state::AppState::new(config, dir.path().join("unicode-scroll.toml")).unwrap();
-
-    let mut long_body = String::new();
-    for i in 0..80 {
-        long_body.push_str(&format!("行-{i}: こんにちは世界🌍データ\n"));
-    }
-    long_body.push_str("UTAIL");
-
-    app.stats.record(zone_router::stats::RequestLogEntry::new(
-        chrono::Utc::now(),
-        "test".into(),
-        10,
-        zone_router::stats::CapturedRequest {
-            method: "GET".into(),
-            path: "/api".into(),
-            headers: zone_router::stats::HeaderPairs::default(),
-            body: None,
-        },
-        zone_router::stats::CapturedResponse {
-            status: 200,
-            headers: zone_router::stats::HeaderPairs::default(),
-            body: Some(long_body),
-        },
-    ));
-
-    let width: u16 = 80;
-    let height: u16 = 40;
-
-    // At scroll=0, the tail marker should NOT be visible
-    let tui_top = TuiState {
-        focus: FocusPanel::RequestLog,
-        mode: InputMode::DetailView,
-        log_cursor: 0,
-        detail_scroll: 0,
-        ..TuiState::default()
-    };
-    let output_top = render_to_string(&app, &tui_top, width, height);
-    assert!(
-        !output_top.contains("UTAIL"),
-        "non-ASCII tail should NOT be visible at scroll=0"
-    );
-
-    // At a large scroll value, the tail marker SHOULD be visible
-    let tui_bottom = TuiState {
-        focus: FocusPanel::RequestLog,
-        mode: InputMode::DetailView,
-        log_cursor: 0,
-        detail_scroll: 300,
-        ..TuiState::default()
-    };
-    let output_bottom = render_to_string(&app, &tui_bottom, width, height);
-    assert!(
-        output_bottom.contains("UTAIL"),
-        "non-ASCII tail should be visible when scrolled to bottom"
-    );
-
-    // Over-scroll should clamp and still show the tail
-    let tui_clamped = TuiState {
-        focus: FocusPanel::RequestLog,
-        mode: InputMode::DetailView,
-        log_cursor: 0,
-        detail_scroll: 9999,
-        ..TuiState::default()
-    };
-    let output_clamped = render_to_string(&app, &tui_clamped, width, height);
-    assert!(
-        output_clamped.contains("UTAIL"),
-        "over-scrolling non-ASCII content should clamp and still show tail"
-    );
-}
-
-#[test]
 fn render_log_auto_scroll_and_highlight() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -731,17 +399,12 @@ fn render_log_auto_scroll_and_highlight() {
             chrono::Utc::now(),
             format!("backend-{i}"),
             i as u64,
-            zone_router::stats::CapturedRequest {
-                method: "POST".into(),
-                path: format!("/path-{i}"),
-                headers: zone_router::stats::HeaderPairs::default(),
-                body: None,
-            },
-            zone_router::stats::CapturedResponse {
-                status: 200,
-                headers: zone_router::stats::HeaderPairs::default(),
-                body: None,
-            },
+            "POST".into(),
+            format!("/path-{i}"),
+            200,
+            None,
+            zone_router::stats::TransferType::Json,
+            None,
         ));
     }
 
