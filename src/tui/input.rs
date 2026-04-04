@@ -56,7 +56,18 @@ pub fn handle_input(
                 let s = rt.block_on(state.read());
                 let len = s.stats.log.len();
                 if len > 0 {
-                    tui.log_cursor = (tui.log_cursor + 1).min(len.saturating_sub(1));
+                    // Resolve current position from stable ID before moving
+                    let current = tui
+                        .log_cursor_id
+                        .and_then(|id| {
+                            s.stats
+                                .log
+                                .iter()
+                                .position(|e| e.id == id)
+                                .map(|di| len.saturating_sub(1) - di)
+                        })
+                        .unwrap_or(tui.log_cursor);
+                    tui.log_cursor = (current + 1).min(len.saturating_sub(1));
                     let deque_idx = len.saturating_sub(1) - tui.log_cursor;
                     tui.log_cursor_id = s.stats.log.get(deque_idx).map(|e| e.id);
                 }
@@ -67,10 +78,20 @@ pub fn handle_input(
                 tui.cursor = tui.cursor.saturating_sub(1);
             }
             FocusPanel::RequestLog => {
-                tui.log_cursor = tui.log_cursor.saturating_sub(1);
                 let s = rt.block_on(state.read());
                 let len = s.stats.log.len();
                 if len > 0 {
+                    let current = tui
+                        .log_cursor_id
+                        .and_then(|id| {
+                            s.stats
+                                .log
+                                .iter()
+                                .position(|e| e.id == id)
+                                .map(|di| len.saturating_sub(1) - di)
+                        })
+                        .unwrap_or(tui.log_cursor);
+                    tui.log_cursor = current.saturating_sub(1);
                     let deque_idx =
                         len.saturating_sub(1) - tui.log_cursor.min(len.saturating_sub(1));
                     tui.log_cursor_id = s.stats.log.get(deque_idx).map(|e| e.id);
@@ -468,11 +489,7 @@ pub fn parse_model_map_input(input: &str) -> Option<ModelMap> {
             _ => return None,
         }
     }
-    if mm.has_any() {
-        Some(mm)
-    } else {
-        None
-    }
+    if mm.has_any() { Some(mm) } else { None }
 }
 
 /// Format a `ModelMap` as a comma-separated `key=value` string for pre-filling input.

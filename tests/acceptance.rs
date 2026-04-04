@@ -1,8 +1,8 @@
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::routing::post;
-use axum::Router;
 use futures_util::stream;
 use std::sync::Arc;
 use std::time::Duration;
@@ -2391,6 +2391,7 @@ mod tui_tests {
 
         // k at 0 stays at 0
         tui.log_cursor = 0;
+        tui.log_cursor_id = None;
         zone_router::tui::input::handle_input(
             key(KeyCode::Char('k')),
             &mut tui,
@@ -2401,6 +2402,7 @@ mod tui_tests {
 
         // j at end stays at end
         tui.log_cursor = 4;
+        tui.log_cursor_id = None;
         zone_router::tui::input::handle_input(
             key(KeyCode::Char('j')),
             &mut tui,
@@ -2660,8 +2662,8 @@ mod tui_tests {
         width: u16,
         height: u16,
     ) -> String {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2965,8 +2967,8 @@ mod tui_tests {
 
     #[test]
     fn render_popup_geometry_is_centered_in_log_area() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let dir = tempfile::tempdir().unwrap();
         let state_arc = make_app_state_with_log(&dir);
@@ -3129,9 +3131,9 @@ mod tui_tests {
 
     #[test]
     fn render_popup_exact_centered_geometry() {
+        use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         use ratatui::layout::{Constraint, Direction, Layout};
-        use ratatui::Terminal;
 
         let dir = tempfile::tempdir().unwrap();
         let state_arc = make_app_state_with_log(&dir);
@@ -3315,8 +3317,8 @@ mod tui_tests {
 
     #[test]
     fn render_log_auto_scroll_and_highlight() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let dir = tempfile::tempdir().unwrap();
         let config = zone_router::config::Config {

@@ -1,7 +1,7 @@
 use crate::config::{AuthType, ModelMap};
 use crate::state::AppState;
 use crate::stats::{
-    truncate_body_for_log, CapturedRequest, CapturedResponse, HeaderPairs, RequestLogEntry,
+    CapturedRequest, CapturedResponse, HeaderPairs, RequestLogEntry, truncate_body_for_log,
 };
 use axum::body::Body;
 use axum::extract::State;
@@ -209,13 +209,26 @@ where
             if done_buffering {
                 // Still need to count data events for the truncation marker,
                 // but don't grow carry unboundedly. Use self.tail to carry
-                // partial delimiters across chunk boundaries.
+                // partial delimiters across chunk boundaries, and track whether
+                // the current incomplete frame contains a data: line via a flag
+                // so we don't lose it when trimming the tail.
                 self.tail.extend_from_slice(chunk);
+
+                // Check if any new data: lines appeared in the freshly appended bytes
+                if !self.carry_flushed_data {
+                    // Reuse carry_flushed_data as "current frame has data" flag
+                    // when in done_buffering mode
+                    if chunk.windows(5).any(|w| w == b"data:") {
+                        self.carry_flushed_data = true;
+                    }
+                }
+
                 while let Some(delim_end) = find_blank_line(&self.tail) {
                     let frame = &self.tail[..delim_end];
-                    if is_data_event(frame) {
+                    if self.carry_flushed_data || is_data_event(frame) {
                         self.event_count += 1;
                     }
+                    self.carry_flushed_data = false;
                     self.tail = self.tail[delim_end..].to_vec();
                 }
                 // Keep only the last 3 bytes for cross-chunk delimiter matching
