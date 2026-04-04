@@ -285,7 +285,7 @@ where
 
 impl<S> Drop for SseBufferingStream<S> {
     fn drop(&mut self) {
-        if !self.carry.is_empty() {
+        if !self.carry.is_empty() && is_data_event(&self.carry) {
             self.event_count += 1;
             if self.event_count <= MAX_SSE_EVENTS && self.preview.len() < MAX_CAPTURED_BODY_BYTES {
                 let remaining_cap = MAX_CAPTURED_BODY_BYTES - self.preview.len();
