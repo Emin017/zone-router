@@ -107,7 +107,7 @@ fn extract_header_pairs(headers: &HeaderMap) -> HeaderPairs {
 }
 
 const MAX_SSE_EVENTS: usize = 20;
-const MAX_CAPTURED_BODY_BYTES: usize = 256 * 1024; // 256 KB
+const MAX_CAPTURED_BODY_BYTES: usize = 32 * 1024; // 32 KB
 
 fn capture_body(raw: &[u8]) -> Option<String> {
     if raw.is_empty() {

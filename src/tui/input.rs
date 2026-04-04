@@ -132,6 +132,10 @@ pub fn handle_input(
                         s.stats.log.get(idx).map(|e| e.id)
                     }
                 };
+                // Sync log_cursor_id so closing the panel preserves the selection
+                if tui.log_cursor_id.is_none() {
+                    tui.log_cursor_id = tui.detail_entry_id;
+                }
                 drop(s);
                 tui.mode = InputMode::DetailView;
             }
