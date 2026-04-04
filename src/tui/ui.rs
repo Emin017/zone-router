@@ -204,8 +204,8 @@ fn draw_request_log(frame: &mut Frame, state: &AppState, tui: &TuiState, area: R
 }
 
 fn centered_rect(area: Rect, width_pct: u16, height_pct: u16) -> Rect {
-    let w = area.width * width_pct / 100;
-    let h = area.height * height_pct / 100;
+    let w = (area.width as u32 * width_pct as u32 / 100) as u16;
+    let h = (area.height as u32 * height_pct as u32 / 100) as u16;
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     Rect::new(x, y, w, h)
