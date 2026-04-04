@@ -380,6 +380,8 @@ pub fn handle_input_mode(
                             if let Some(idx) = pos {
                                 if idx > 0 {
                                     tui.detail_entry_id = Some(s.stats.log[idx - 1].id);
+                                    tui.log_cursor =
+                                        s.stats.log.len().saturating_sub(1) - (idx - 1);
                                     tui.detail_scroll = 0;
                                     tui.body_expanded = false;
                                 }
@@ -393,6 +395,8 @@ pub fn handle_input_mode(
                             if let Some(idx) = pos {
                                 if idx + 1 < s.stats.log.len() {
                                     tui.detail_entry_id = Some(s.stats.log[idx + 1].id);
+                                    tui.log_cursor =
+                                        s.stats.log.len().saturating_sub(1) - (idx + 1);
                                     tui.detail_scroll = 0;
                                     tui.body_expanded = false;
                                 }

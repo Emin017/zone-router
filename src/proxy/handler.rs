@@ -207,7 +207,10 @@ where
                 }
 
                 // If carry itself has grown past the cap with no delimiter in sight,
-                // flush what we can into preview and discard the rest.
+                // flush what we can into preview and discard the excess bytes.
+                // Do NOT increment event_count here — the oversized frame is still
+                // a single logical event that will be counted when the delimiter
+                // eventually arrives or when Drop flushes the remaining carry.
                 if self.carry.len() > MAX_CAPTURED_BODY_BYTES {
                     if self.event_count < MAX_SSE_EVENTS
                         && self.preview.len() < MAX_CAPTURED_BODY_BYTES
@@ -218,7 +221,6 @@ where
                         self.preview.extend_from_slice(&flush);
                     }
                     self.carry.clear();
-                    self.event_count += 1;
                 }
             }
         }
