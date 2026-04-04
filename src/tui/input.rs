@@ -55,6 +55,9 @@ pub fn handle_input(
             FocusPanel::RequestLog => {
                 if log_len > 0 {
                     tui.log_cursor = (tui.log_cursor + 1).min(log_len.saturating_sub(1));
+                    let s = rt.block_on(state.read());
+                    let deque_idx = log_len.saturating_sub(1) - tui.log_cursor;
+                    tui.log_cursor_id = s.stats.log.get(deque_idx).map(|e| e.id);
                 }
             }
         },
@@ -64,6 +67,10 @@ pub fn handle_input(
             }
             FocusPanel::RequestLog => {
                 tui.log_cursor = tui.log_cursor.saturating_sub(1);
+                let s = rt.block_on(state.read());
+                let deque_idx = s.stats.log.len().saturating_sub(1)
+                    - tui.log_cursor.min(s.stats.log.len().saturating_sub(1));
+                tui.log_cursor_id = s.stats.log.get(deque_idx).map(|e| e.id);
             }
         },
         KeyCode::Char('G') => {

@@ -129,11 +129,22 @@ fn draw_request_log(frame: &mut Frame, state: &AppState, tui: &TuiState, area: R
     let visible_height = area.height.saturating_sub(2) as usize;
     let log_len = state.stats.log.len();
 
-    // Derive scroll from cursor position to keep cursor visible.
-    // log_cursor=0 is the newest entry (displayed at top). The VecDeque stores
-    // oldest-first, so display index i maps to VecDeque index (log_len - 1 - i).
-    let scroll = if tui.log_cursor >= visible_height {
-        tui.log_cursor - visible_height + 1
+    // Resolve log_cursor from the stable entry ID so the highlighted row
+    // doesn't shift when new entries arrive.
+    let log_cursor = tui
+        .log_cursor_id
+        .and_then(|id| {
+            state
+                .stats
+                .log
+                .iter()
+                .position(|e| e.id == id)
+                .map(|deque_idx| log_len.saturating_sub(1) - deque_idx)
+        })
+        .unwrap_or(tui.log_cursor);
+
+    let scroll = if log_cursor >= visible_height {
+        log_cursor - visible_height + 1
     } else {
         0
     };
@@ -145,7 +156,7 @@ fn draw_request_log(frame: &mut Frame, state: &AppState, tui: &TuiState, area: R
         .filter_map(|deque_idx| {
             let entry = state.stats.log.get(deque_idx)?;
             let display_idx = log_len.saturating_sub(1) - deque_idx;
-            let is_selected = display_idx == tui.log_cursor && tui.focus == FocusPanel::RequestLog;
+            let is_selected = display_idx == log_cursor && tui.focus == FocusPanel::RequestLog;
 
             let cursor_marker = if is_selected { ">" } else { " " };
             let status_color = if entry.response.status < 400 {

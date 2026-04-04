@@ -58,6 +58,7 @@ pub struct TuiState {
     pub search_query: String,
     pub g_pressed: bool,
     pub log_cursor: usize,
+    pub log_cursor_id: Option<u64>,
     pub log_scroll: usize,
     pub focus: FocusPanel,
     pub detail_scroll: usize,
@@ -80,6 +81,7 @@ impl Default for TuiState {
             search_query: String::new(),
             g_pressed: false,
             log_cursor: 0,
+            log_cursor_id: None,
             log_scroll: 0,
             focus: FocusPanel::Backends,
             detail_scroll: 0,
@@ -118,10 +120,8 @@ fn run_event_loop(
     let rt = tokio::runtime::Handle::current();
 
     loop {
-        {
-            let app_state = rt.block_on(state.read());
-            terminal.draw(|frame| draw(frame, &app_state, tui_state))?;
-        }
+        let app_state = rt.block_on(state.read()).clone();
+        terminal.draw(|frame| draw(frame, &app_state, tui_state))?;
 
         if event::poll(Duration::from_millis(33))? {
             if let Event::Key(key) = event::read()? {
