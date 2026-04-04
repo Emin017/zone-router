@@ -95,16 +95,23 @@ pub fn handle_input(
             } else if tui.focus == FocusPanel::RequestLog && log_len > 0 {
                 tui.detail_scroll = 0;
                 tui.body_expanded = false;
-                // Use the stable cursor ID if available, otherwise resolve from a fresh snapshot
-                tui.detail_entry_id = tui.log_cursor_id.or_else(|| {
-                    let s = rt.block_on(state.read());
+                // Validate log_cursor_id against current log; fall back to index lookup
+                let s = rt.block_on(state.read());
+                let id_valid = tui
+                    .log_cursor_id
+                    .is_some_and(|id| s.stats.log.iter().any(|e| e.id == id));
+                tui.detail_entry_id = if id_valid {
+                    tui.log_cursor_id
+                } else {
                     let len = s.stats.log.len();
                     if len == 0 {
-                        return None;
+                        None
+                    } else {
+                        let idx = len.saturating_sub(1) - tui.log_cursor.min(len.saturating_sub(1));
+                        s.stats.log.get(idx).map(|e| e.id)
                     }
-                    let idx = len.saturating_sub(1) - tui.log_cursor.min(len.saturating_sub(1));
-                    s.stats.log.get(idx).map(|e| e.id)
-                });
+                };
+                drop(s);
                 tui.mode = InputMode::DetailView;
             }
         }
@@ -395,7 +402,9 @@ pub fn handle_input_mode(
                             let pos = s.stats.log.iter().position(|e| e.id == current_id);
                             if let Some(idx) = pos {
                                 if idx > 0 {
-                                    tui.detail_entry_id = Some(s.stats.log[idx - 1].id);
+                                    let new_id = s.stats.log[idx - 1].id;
+                                    tui.detail_entry_id = Some(new_id);
+                                    tui.log_cursor_id = Some(new_id);
                                     tui.log_cursor =
                                         s.stats.log.len().saturating_sub(1) - (idx - 1);
                                     tui.detail_scroll = 0;
@@ -410,7 +419,9 @@ pub fn handle_input_mode(
                             let pos = s.stats.log.iter().position(|e| e.id == current_id);
                             if let Some(idx) = pos {
                                 if idx + 1 < s.stats.log.len() {
-                                    tui.detail_entry_id = Some(s.stats.log[idx + 1].id);
+                                    let new_id = s.stats.log[idx + 1].id;
+                                    tui.detail_entry_id = Some(new_id);
+                                    tui.log_cursor_id = Some(new_id);
                                     tui.log_cursor =
                                         s.stats.log.len().saturating_sub(1) - (idx + 1);
                                     tui.detail_scroll = 0;
