@@ -431,6 +431,17 @@ pub fn handle_input_mode(
                                     tui.detail_scroll = 0;
                                     tui.body_expanded = false;
                                 }
+                            } else {
+                                // Entry was evicted — resync to cursor position
+                                let len = s.stats.log.len();
+                                if len > 0 {
+                                    let di = len.saturating_sub(1)
+                                        - tui.log_cursor.min(len.saturating_sub(1));
+                                    if let Some(e) = s.stats.log.get(di) {
+                                        tui.detail_entry_id = Some(e.id);
+                                        tui.log_cursor_id = Some(e.id);
+                                    }
+                                }
                             }
                         }
                     }
@@ -447,6 +458,17 @@ pub fn handle_input_mode(
                                         s.stats.log.len().saturating_sub(1) - (idx + 1);
                                     tui.detail_scroll = 0;
                                     tui.body_expanded = false;
+                                }
+                            } else {
+                                // Entry was evicted — resync to cursor position
+                                let len = s.stats.log.len();
+                                if len > 0 {
+                                    let di = len.saturating_sub(1)
+                                        - tui.log_cursor.min(len.saturating_sub(1));
+                                    if let Some(e) = s.stats.log.get(di) {
+                                        tui.detail_entry_id = Some(e.id);
+                                        tui.log_cursor_id = Some(e.id);
+                                    }
                                 }
                             }
                         }

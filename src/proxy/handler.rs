@@ -225,9 +225,11 @@ where
                     self.carry_flushed_data = false;
                     self.tail = self.tail[delim_end..].to_vec();
                 }
-                // Keep only the last 3 bytes for cross-chunk delimiter matching
-                if self.tail.len() > 3 {
-                    let start = self.tail.len() - 3;
+                // Keep the last 7 bytes: enough for the longest partial delimiter
+                // (\r\n\r = 3) plus a split `data` prefix (4), so `data:` fields
+                // spanning chunk boundaries are preserved for is_data_event.
+                if self.tail.len() > 7 {
+                    let start = self.tail.len() - 7;
                     self.tail = self.tail[start..].to_vec();
                 }
             } else {
