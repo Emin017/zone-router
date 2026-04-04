@@ -75,6 +75,23 @@ fn extract_header_pairs(headers: &HeaderMap) -> HeaderPairs {
 }
 
 const MAX_SSE_EVENTS: usize = 20;
+const MAX_CAPTURED_BODY_BYTES: usize = 256 * 1024; // 256 KB
+
+fn capture_body(raw: &[u8]) -> Option<String> {
+    if raw.is_empty() {
+        return None;
+    }
+    if raw.len() <= MAX_CAPTURED_BODY_BYTES {
+        Some(String::from_utf8_lossy(raw).into_owned())
+    } else {
+        let truncated = String::from_utf8_lossy(&raw[..MAX_CAPTURED_BODY_BYTES]);
+        Some(format!(
+            "{}\n... (truncated, {} bytes total)",
+            truncated,
+            raw.len()
+        ))
+    }
+}
 
 /// Find the first blank-line delimiter in `buf`, returning the byte offset
 /// just past the delimiter. Handles both `\n\n` and `\r\n\r\n`.
@@ -228,11 +245,7 @@ pub async fn proxy_handler(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    let req_body = if body_bytes.is_empty() {
-        None
-    } else {
-        Some(String::from_utf8_lossy(&body_bytes).into_owned())
-    };
+    let req_body = capture_body(&body_bytes);
 
     let (body_bytes, body_changed) = match backend.model_map.as_ref().filter(|mm| mm.has_any()) {
         Some(mm) => {
@@ -334,11 +347,7 @@ pub async fn proxy_handler(
                     .into_response()
             } else {
                 let resp_body_bytes = resp.bytes().await.unwrap_or_default();
-                let resp_body_str = if resp_body_bytes.is_empty() {
-                    None
-                } else {
-                    Some(String::from_utf8_lossy(&resp_body_bytes).into_owned())
-                };
+                let resp_body_str = capture_body(&resp_body_bytes);
                 let entry = make_log_entry(
                     &backend_name,
                     start,
