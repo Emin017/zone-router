@@ -1,11 +1,11 @@
 use crate::state::AppState;
+use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use crossterm::ExecutableCommand;
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use std::io::stdout;
 use std::sync::Arc;
 use std::time::Duration;
@@ -63,7 +63,6 @@ pub struct TuiState {
     pub focus: FocusPanel,
     pub detail_scroll: usize,
     pub detail_entry_id: Option<u64>,
-    pub body_expanded: bool,
     pub auth_type_rejected: bool,
     pub model_map_rejected: bool,
     pub pending_auth_type: Option<crate::config::AuthType>,
@@ -86,7 +85,6 @@ impl Default for TuiState {
             focus: FocusPanel::Backends,
             detail_scroll: 0,
             detail_entry_id: None,
-            body_expanded: false,
             auth_type_rejected: false,
             model_map_rejected: false,
             pending_auth_type: None,

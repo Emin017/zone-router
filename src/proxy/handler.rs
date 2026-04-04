@@ -1,6 +1,6 @@
 use crate::config::{AuthType, ModelMap};
 use crate::state::AppState;
-use crate::stats::{CapturedRequest, CapturedResponse, HeaderPairs, RequestLogEntry};
+use crate::stats::{RequestLogEntry, TokenUsage, TransferType};
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
@@ -9,7 +9,6 @@ use bytes::Bytes;
 use chrono::Utc;
 use futures_util::Stream;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -34,16 +33,98 @@ std::thread_local! {
 fn make_log_entry(
     backend: &str,
     start: Instant,
-    request: CapturedRequest,
-    response: CapturedResponse,
+    method: String,
+    path: String,
+    status: u16,
+    model: Option<String>,
+    transfer_type: TransferType,
+    usage: Option<TokenUsage>,
 ) -> RequestLogEntry {
     RequestLogEntry::new(
         Utc::now(),
         backend.to_owned(),
         start.elapsed().as_millis() as u64,
-        request,
-        response,
+        method,
+        path,
+        status,
+        model,
+        transfer_type,
+        usage,
     )
+}
+
+fn extract_model(body: &[u8]) -> Option<String> {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("model")?.as_str().map(String::from))
+}
+
+fn extract_usage(body: &[u8]) -> Option<TokenUsage> {
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let usage = v.get("usage")?;
+    Some(TokenUsage {
+        input_tokens: usage.get("input_tokens")?.as_u64()?,
+        output_tokens: usage.get("output_tokens")?.as_u64()?,
+    })
+}
+
+const SSE_TAIL_CAP: usize = 8 * 1024;
+
+struct SseTailStream<S> {
+    inner: S,
+    tail: Vec<u8>,
+    done_tx: Option<tokio::sync::oneshot::Sender<Option<TokenUsage>>>,
+}
+
+impl<S> Stream for SseTailStream<S>
+where
+    S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
+{
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let poll = Pin::new(&mut self.inner).poll_next(cx);
+        if let Poll::Ready(Some(Ok(ref chunk))) = poll {
+            self.tail.extend_from_slice(chunk);
+            if self.tail.len() > SSE_TAIL_CAP {
+                let start = self.tail.len() - SSE_TAIL_CAP;
+                self.tail = self.tail[start..].to_vec();
+            }
+        }
+        poll.map(|opt| opt.map(|r| r.map_err(std::io::Error::other)))
+    }
+}
+
+impl<S> Drop for SseTailStream<S> {
+    fn drop(&mut self) {
+        if let Some(tx) = self.done_tx.take() {
+            let usage = extract_usage_from_tail(&self.tail);
+            let _ = tx.send(usage);
+        }
+    }
+}
+
+fn extract_usage_from_tail(tail: &[u8]) -> Option<TokenUsage> {
+    let text = std::str::from_utf8(tail).ok()?;
+    for line in text.lines().rev() {
+        let payload = match line
+            .strip_prefix("data: ")
+            .or_else(|| line.strip_prefix("data:"))
+        {
+            Some(p) => p,
+            None => continue,
+        };
+        if !payload.contains("usage") {
+            continue;
+        }
+        let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+        let usage = v.get("usage")?;
+        return Some(TokenUsage {
+            input_tokens: usage.get("input_tokens")?.as_u64()?,
+            output_tokens: usage.get("output_tokens")?.as_u64()?,
+        });
+    }
+    None
 }
 
 fn rewrite_model(body: Bytes, mm: &ModelMap) -> (Bytes, bool) {
@@ -85,237 +166,8 @@ fn rewrite_model(body: Bytes, mm: &ModelMap) -> (Bytes, bool) {
     }
 }
 
-fn extract_header_pairs(headers: &HeaderMap) -> HeaderPairs {
-    HeaderPairs(
-        headers
-            .iter()
-            .filter(|(name, _)| {
-                let n = name.as_str().to_lowercase();
-                !matches!(
-                    n.as_str(),
-                    "x-api-key" | "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
-                )
-            })
-            .filter_map(|(name, value)| {
-                value
-                    .to_str()
-                    .ok()
-                    .map(|v| (name.as_str().to_owned(), v.to_owned()))
-            })
-            .collect(),
-    )
-}
-
-const MAX_SSE_EVENTS: usize = 20;
-const MAX_CAPTURED_BODY_BYTES: usize = 32 * 1024; // 32 KB
-
-fn capture_body(raw: &[u8]) -> Option<String> {
-    if raw.is_empty() {
-        return None;
-    }
-    if raw.len() <= MAX_CAPTURED_BODY_BYTES {
-        Some(String::from_utf8_lossy(raw).into_owned())
-    } else {
-        let truncated = String::from_utf8_lossy(&raw[..MAX_CAPTURED_BODY_BYTES]);
-        Some(format!(
-            "{}\n... (truncated, {} bytes total)",
-            truncated,
-            raw.len()
-        ))
-    }
-}
-
-/// Find the first blank-line delimiter in `buf`, returning the byte offset
-/// just past the delimiter. Handles both `\n\n` and `\r\n\r\n`.
-fn find_blank_line(buf: &[u8]) -> Option<usize> {
-    let mut i = 0;
-    while i < buf.len() {
-        if buf[i] == b'\r'
-            && i + 3 < buf.len()
-            && buf[i + 1] == b'\n'
-            && buf[i + 2] == b'\r'
-            && buf[i + 3] == b'\n'
-        {
-            return Some(i + 4);
-        }
-        if buf[i] == b'\n' && i + 1 < buf.len() && buf[i + 1] == b'\n' {
-            return Some(i + 2);
-        }
-        i += 1;
-    }
-    None
-}
-
-/// A stream wrapper that buffers the first N SSE events and signals completion on drop.
-///
-/// Buffers raw bytes to handle UTF-8 code points split across chunk boundaries.
-/// Recognises both LF (`\n\n`) and CRLF (`\r\n\r\n`) blank-line event delimiters.
-struct SseBufferingStream<S> {
-    inner: S,
-    done_tx: Option<tokio::sync::oneshot::Sender<Option<String>>>,
-    /// Raw byte buffer for accumulated preview content (first N events).
-    preview: Vec<u8>,
-    /// Carry buffer holding bytes not yet terminated by a blank line.
-    carry: Vec<u8>,
-    event_count: usize,
-    /// Set when carry was flushed due to overflow, so the next delimiter
-    /// still counts the oversized frame as one data event.
-    carry_flushed_data: bool,
-    /// Small tail buffer for cross-chunk delimiter detection after done_buffering.
-    /// Retains at most 3 trailing bytes (\r\n\r is the longest partial delimiter).
-    tail: Vec<u8>,
-    /// Total bytes received across all chunks, for accurate truncation reporting.
-    total_bytes: usize,
-}
-
-/// Returns true if the SSE frame contains a `data:` field line,
-/// meaning it carries actual event payload rather than being a
-/// comment-only or empty keepalive frame.
-fn is_data_event(frame: &[u8]) -> bool {
-    for line in frame.split(|&b| b == b'\n') {
-        let trimmed = if line.first() == Some(&b'\r') {
-            &line[1..]
-        } else {
-            line
-        };
-        if trimmed.starts_with(b"data:") || trimmed == b"data" {
-            return true;
-        }
-    }
-    false
-}
-
-impl<S> Stream for SseBufferingStream<S>
-where
-    S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
-{
-    type Item = Result<Bytes, std::io::Error>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let poll = Pin::new(&mut self.inner).poll_next(cx);
-        if let Poll::Ready(Some(Ok(ref chunk))) = poll {
-            self.total_bytes += chunk.len();
-            // Stop accumulating into carry once we've exceeded both the event
-            // cap and byte cap — there's nothing left to buffer.
-            let done_buffering =
-                self.event_count >= MAX_SSE_EVENTS && self.preview.len() >= MAX_CAPTURED_BODY_BYTES;
-
-            if done_buffering {
-                // Still need to count data events for the truncation marker,
-                // but don't grow carry unboundedly. Use self.tail to carry
-                // partial delimiters across chunk boundaries, and track whether
-                // the current incomplete frame contains a data: line via a flag
-                // so we don't lose it when trimming the tail.
-                self.tail.extend_from_slice(chunk);
-
-                // Check if any new data: lines appeared in the freshly appended bytes
-                if !self.carry_flushed_data {
-                    // Reuse carry_flushed_data as "current frame has data" flag
-                    // when in done_buffering mode
-                    if chunk.windows(5).any(|w| w == b"data:") {
-                        self.carry_flushed_data = true;
-                    }
-                }
-
-                while let Some(delim_end) = find_blank_line(&self.tail) {
-                    let frame = &self.tail[..delim_end];
-                    if self.carry_flushed_data || is_data_event(frame) {
-                        self.event_count += 1;
-                    }
-                    self.carry_flushed_data = false;
-                    self.tail = self.tail[delim_end..].to_vec();
-                }
-                // Keep the last 7 bytes: enough for the longest partial delimiter
-                // (\r\n\r = 3) plus a split `data` prefix (4), so `data:` fields
-                // spanning chunk boundaries are preserved for is_data_event.
-                if self.tail.len() > 7 {
-                    let start = self.tail.len() - 7;
-                    self.tail = self.tail[start..].to_vec();
-                }
-            } else {
-                self.carry.extend_from_slice(chunk);
-
-                while let Some(delim_end) = find_blank_line(&self.carry) {
-                    let event_bytes = self.carry[..delim_end].to_vec();
-                    self.carry = self.carry[delim_end..].to_vec();
-
-                    if self.carry_flushed_data || is_data_event(&event_bytes) {
-                        self.event_count += 1;
-                        self.carry_flushed_data = false;
-                    } else {
-                        continue;
-                    }
-                    if self.event_count <= MAX_SSE_EVENTS
-                        && self.preview.len() < MAX_CAPTURED_BODY_BYTES
-                    {
-                        let remaining_cap = MAX_CAPTURED_BODY_BYTES - self.preview.len();
-                        if event_bytes.len() <= remaining_cap {
-                            self.preview.extend_from_slice(&event_bytes);
-                        } else {
-                            self.preview
-                                .extend_from_slice(&event_bytes[..remaining_cap]);
-                        }
-                    }
-                }
-
-                // If carry itself has grown past the cap with no delimiter in sight,
-                // flush what we can into preview and discard the excess bytes.
-                // Record that we flushed data so the next delimiter still counts
-                // this oversized frame as one event.
-                if self.carry.len() > MAX_CAPTURED_BODY_BYTES {
-                    let has_data = is_data_event(&self.carry);
-                    if self.event_count < MAX_SSE_EVENTS
-                        && self.preview.len() < MAX_CAPTURED_BODY_BYTES
-                    {
-                        let remaining_cap = MAX_CAPTURED_BODY_BYTES - self.preview.len();
-                        let to_take = self.carry.len().min(remaining_cap);
-                        let flush = self.carry[..to_take].to_vec();
-                        self.preview.extend_from_slice(&flush);
-                    }
-                    self.carry.clear();
-                    if has_data {
-                        self.carry_flushed_data = true;
-                    }
-                }
-            }
-        }
-        poll.map(|opt| opt.map(|r| r.map_err(std::io::Error::other)))
-    }
-}
-
-impl<S> Drop for SseBufferingStream<S> {
-    fn drop(&mut self) {
-        if !self.carry.is_empty() && is_data_event(&self.carry) {
-            self.event_count += 1;
-            if self.event_count <= MAX_SSE_EVENTS && self.preview.len() < MAX_CAPTURED_BODY_BYTES {
-                let remaining_cap = MAX_CAPTURED_BODY_BYTES - self.preview.len();
-                let to_append = self.carry.len().min(remaining_cap);
-                self.preview.extend_from_slice(&self.carry[..to_append]);
-            }
-        }
-
-        if let Some(tx) = self.done_tx.take() {
-            let byte_capped = self.preview.len() >= MAX_CAPTURED_BODY_BYTES;
-            let body = if self.event_count > MAX_SSE_EVENTS || byte_capped {
-                let text = String::from_utf8_lossy(&self.preview);
-                let reason = if self.event_count > MAX_SSE_EVENTS {
-                    format!("{} events total", self.event_count)
-                } else {
-                    format!("{} bytes total", self.total_bytes)
-                };
-                Some(format!("{}\n... (truncated, {reason})", text.trim_end(),))
-            } else if self.preview.is_empty() {
-                None
-            } else {
-                Some(String::from_utf8_lossy(&self.preview).into_owned())
-            };
-            let _ = tx.send(body);
-        }
-    }
-}
-
 pub async fn proxy_handler(
-    State(state): State<Arc<RwLock<AppState>>>,
+    State(state): State<std::sync::Arc<RwLock<AppState>>>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -385,7 +237,7 @@ pub async fn proxy_handler(
         None => (body_bytes, false),
     };
 
-    let req_body = capture_body(&body_bytes);
+    let model = extract_model(&body_bytes);
 
     // Strip body-dependent headers only when the payload actually changed;
     // reqwest will recalculate Content-Length from the actual body.
@@ -399,18 +251,6 @@ pub async fn proxy_handler(
     } else {
         forwarded_headers
     };
-
-    // Capture request headers for logging after stripping stale body-dependent
-    // headers, so the detail panel stays consistent with the rewritten body.
-    let mut req_headers = extract_header_pairs(&headers);
-    if body_changed {
-        req_headers.0.retain(|(name, _)| {
-            !matches!(
-                name.as_str(),
-                "content-length" | "content-md5" | "digest" | "content-digest"
-            )
-        });
-    }
 
     let client = CLIENT.with(|c| c.clone());
     let auth_header = match backend.auth_type {
@@ -438,8 +278,6 @@ pub async fn proxy_handler(
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|ct| ct.contains("text/event-stream"));
 
-            let resp_headers = extract_header_pairs(resp.headers());
-
             let response_headers: HeaderMap = resp
                 .headers()
                 .iter()
@@ -452,35 +290,25 @@ pub async fn proxy_handler(
 
             if is_stream {
                 let state_clone = state.clone();
-                let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Option<String>>();
-                let wrapped = SseBufferingStream {
+                let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Option<TokenUsage>>();
+                let wrapped = SseTailStream {
                     inner: resp.bytes_stream(),
-                    done_tx: Some(done_tx),
-                    preview: Vec::new(),
-                    carry: Vec::new(),
-                    event_count: 0,
-                    carry_flushed_data: false,
                     tail: Vec::new(),
-                    total_bytes: 0,
+                    done_tx: Some(done_tx),
                 };
                 let body = Body::from_stream(wrapped);
 
                 tokio::spawn(async move {
-                    let sse_body = done_rx.await.unwrap_or(None);
+                    let usage = done_rx.await.unwrap_or(None);
                     let entry = make_log_entry(
                         &backend_name,
                         start,
-                        CapturedRequest {
-                            method: method_str,
-                            path,
-                            headers: req_headers,
-                            body: req_body,
-                        },
-                        CapturedResponse {
-                            status,
-                            headers: resp_headers,
-                            body: sse_body,
-                        },
+                        method_str,
+                        path,
+                        status,
+                        model,
+                        TransferType::Streaming,
+                        usage,
                     );
                     state_clone.write().await.stats.record(entry);
                 });
@@ -493,21 +321,16 @@ pub async fn proxy_handler(
                     .into_response()
             } else {
                 let resp_body_bytes = resp.bytes().await.unwrap_or_default();
-                let resp_body_str = capture_body(&resp_body_bytes);
+                let usage = extract_usage(&resp_body_bytes);
                 let entry = make_log_entry(
                     &backend_name,
                     start,
-                    CapturedRequest {
-                        method: method_str,
-                        path,
-                        headers: req_headers,
-                        body: req_body,
-                    },
-                    CapturedResponse {
-                        status,
-                        headers: resp_headers,
-                        body: resp_body_str,
-                    },
+                    method_str,
+                    path,
+                    status,
+                    model,
+                    TransferType::Json,
+                    usage,
                 );
                 state.write().await.stats.record(entry);
 
@@ -523,17 +346,12 @@ pub async fn proxy_handler(
             let entry = make_log_entry(
                 &backend_name,
                 start,
-                CapturedRequest {
-                    method: method_str,
-                    path,
-                    headers: req_headers,
-                    body: req_body,
-                },
-                CapturedResponse {
-                    status: 502,
-                    headers: HeaderPairs::default(),
-                    body: None,
-                },
+                method_str,
+                path,
+                502,
+                model,
+                TransferType::Json,
+                None,
             );
             state.write().await.stats.record(entry);
             StatusCode::BAD_GATEWAY.into_response()

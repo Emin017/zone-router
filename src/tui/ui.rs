@@ -1,10 +1,10 @@
 use crate::state::AppState;
 use crate::stats::RequestLogEntry;
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
-use ratatui::Frame;
 
 use super::app::{FocusPanel, InputMode, TuiState};
 
@@ -159,7 +159,7 @@ fn draw_request_log(frame: &mut Frame, state: &AppState, tui: &TuiState, area: R
             let is_selected = display_idx == log_cursor && tui.focus == FocusPanel::RequestLog;
 
             let cursor_marker = if is_selected { ">" } else { " " };
-            let status_color = if entry.response.status < 400 {
+            let status_color = if entry.status < 400 {
                 Color::Green
             } else {
                 Color::Red
@@ -174,12 +174,9 @@ fn draw_request_log(frame: &mut Frame, state: &AppState, tui: &TuiState, area: R
                     format!("{:<12}", entry.backend),
                     Style::default().fg(Color::Cyan),
                 ),
-                Span::raw(format!(
-                    " {:<6} {:<20} ",
-                    entry.request.method, entry.request.path
-                )),
+                Span::raw(format!(" {:<6} {:<20} ", entry.method, entry.path)),
                 Span::styled(
-                    format!("{}", entry.response.status),
+                    format!("{}", entry.status),
                     Style::default().fg(status_color),
                 ),
                 Span::raw(format!("  {}ms", entry.latency_ms)),
@@ -211,48 +208,7 @@ fn centered_rect(area: Rect, width_pct: u16, height_pct: u16) -> Rect {
     Rect::new(x, y, w, h)
 }
 
-use unicode_width::UnicodeWidthChar;
-
-fn wrap_text_lines(text: &str, prefix: &str, max_width: usize) -> Vec<Line<'static>> {
-    let prefix_width: usize = prefix.chars().map(|c| c.width().unwrap_or(0)).sum();
-    let usable = max_width.saturating_sub(prefix_width);
-    if usable == 0 {
-        return vec![Line::from(format!("{prefix}{text}"))];
-    }
-    let mut result = Vec::new();
-    for line in text.lines() {
-        let line_width: usize = line.chars().map(|c| c.width().unwrap_or(0)).sum();
-        if line_width <= usable {
-            result.push(Line::from(format!("{prefix}{line}")));
-        } else {
-            let mut current = String::new();
-            let mut current_width = 0usize;
-            for ch in line.chars() {
-                let ch_width = ch.width().unwrap_or(0);
-                if current_width + ch_width > usable && !current.is_empty() {
-                    result.push(Line::from(format!("{prefix}{current}")));
-                    current.clear();
-                    current_width = 0;
-                }
-                current.push(ch);
-                current_width += ch_width;
-            }
-            if !current.is_empty() {
-                result.push(Line::from(format!("{prefix}{current}")));
-            }
-        }
-    }
-    if result.is_empty() {
-        result.push(Line::from(prefix.to_string()));
-    }
-    result
-}
-
-fn build_detail_lines(
-    entry: &RequestLogEntry,
-    body_expanded: bool,
-    inner_width: usize,
-) -> Vec<Line<'static>> {
+fn build_detail_lines(entry: &RequestLogEntry) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     lines.push(Line::from(format!(
@@ -260,88 +216,44 @@ fn build_detail_lines(
         entry.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
     )));
     lines.push(Line::from(format!(" Backend:   {}", entry.backend)));
-    lines.push(Line::from(format!(" Method:    {}", entry.request.method)));
-    lines.push(Line::from(format!(" Path:      {}", entry.request.path)));
+    lines.push(Line::from(format!(" Method:    {}", entry.method)));
+    lines.push(Line::from(format!(" Path:      {}", entry.path)));
     lines.push(Line::from(vec![
         Span::raw(" Status:    ".to_string()),
         Span::styled(
-            format!("{}", entry.response.status),
-            Style::default().fg(if entry.response.status < 400 {
+            format!("{}", entry.status),
+            Style::default().fg(if entry.status < 400 {
                 Color::Green
             } else {
                 Color::Red
             }),
         ),
-        Span::raw(format!("    Latency: {}ms", entry.latency_ms)),
     ]));
+    lines.push(Line::from(format!(" Latency:   {}ms", entry.latency_ms)));
     lines.push(Line::from(""));
 
-    // Request Headers
-    lines.push(Line::styled(
-        " ─── Request Headers ───────────────────────────────",
-        Style::default().fg(Color::DarkGray),
-    ));
-    for (name, value) in &entry.request.headers.0 {
-        lines.extend(wrap_text_lines(
-            &format!("{name}: {value}"),
-            " ",
-            inner_width,
-        ));
-    }
-    if entry.request.headers.0.is_empty() {
-        lines.push(Line::from(" (none)"));
-    }
+    lines.push(Line::from(format!(
+        " Model:     {}",
+        entry.model.as_deref().unwrap_or("(none)")
+    )));
+    lines.push(Line::from(format!(" Transfer:  {}", entry.transfer_type)));
     lines.push(Line::from(""));
 
-    // Request Body (collapsible)
-    match (&entry.request.body, body_expanded) {
-        (Some(body), false) => {
-            lines.push(Line::from(format!(
-                " ▸ Request Body ({} bytes)",
-                body.len()
-            )));
-        }
-        (Some(body), true) => {
+    match &entry.usage {
+        Some(usage) => {
             lines.push(Line::styled(
-                " ▾ Request Body",
+                " Token Usage",
                 Style::default().add_modifier(Modifier::BOLD),
             ));
-            lines.extend(wrap_text_lines(body, " ", inner_width));
-        }
-        (None, _) => {
-            lines.push(Line::from(" ▸ Request Body (empty)"));
-        }
-    }
-    lines.push(Line::from(""));
-
-    // Response Headers
-    lines.push(Line::styled(
-        " ─── Response Headers ──────────────────────────────",
-        Style::default().fg(Color::DarkGray),
-    ));
-    for (name, value) in &entry.response.headers.0 {
-        lines.extend(wrap_text_lines(
-            &format!("{name}: {value}"),
-            " ",
-            inner_width,
-        ));
-    }
-    if entry.response.headers.0.is_empty() {
-        lines.push(Line::from(" (none)"));
-    }
-    lines.push(Line::from(""));
-
-    // Response Body
-    lines.push(Line::styled(
-        " ─── Response Body ─────────────────────────────────",
-        Style::default().fg(Color::DarkGray),
-    ));
-    match &entry.response.body {
-        Some(body) => {
-            lines.extend(wrap_text_lines(body, " ", inner_width));
+            lines.push(Line::from(format!("   Input:  {}", usage.input_tokens)));
+            lines.push(Line::from(format!("   Output: {}", usage.output_tokens)));
+            lines.push(Line::from(format!(
+                "   Total:  {}",
+                usage.input_tokens + usage.output_tokens
+            )));
         }
         None => {
-            lines.push(Line::from(" (empty)"));
+            lines.push(Line::from(" Token Usage: (not available)"));
         }
     }
 
@@ -377,9 +289,8 @@ fn draw_detail_panel(frame: &mut Frame, state: &AppState, tui: &TuiState, log_ar
     };
 
     let panel_area = centered_rect(log_area, 80, 90);
-    let inner_width = panel_area.width.saturating_sub(2) as usize;
 
-    let lines = build_detail_lines(entry, tui.body_expanded, inner_width);
+    let lines = build_detail_lines(entry);
     let max_scroll = lines
         .len()
         .saturating_sub(panel_area.height.saturating_sub(2) as usize);
@@ -403,9 +314,7 @@ fn draw_help_bar(frame: &mut Frame, tui: &TuiState, state: &AppState, area: Rect
         InputMode::Normal => Line::from(
             " [1-9] switch  [a] add  [d] delete  [e] edit  [t] token  [/] search  [q] quit",
         ),
-        InputMode::DetailView => {
-            Line::from(" [j/k] scroll  [Enter] toggle body  [n/p] next/prev  [Esc/h] close")
-        }
+        InputMode::DetailView => Line::from(" [j/k] scroll  [n/p] next/prev  [Esc/h] close"),
         InputMode::ShowToken => Line::from(format!(
             " Token: {}  (press any key to dismiss)",
             state.local_token

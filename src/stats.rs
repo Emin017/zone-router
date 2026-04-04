@@ -1,31 +1,30 @@
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 const MAX_LOG_ENTRIES: usize = 500;
 
 static NEXT_ENTRY_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Ordered collection of HTTP header name-value pairs.
-#[derive(Debug, Clone, Default)]
-pub struct HeaderPairs(pub Vec<(String, String)>);
-
-/// Captured HTTP request data.
-#[derive(Debug, Clone)]
-pub struct CapturedRequest {
-    pub method: String,
-    pub path: String,
-    pub headers: HeaderPairs,
-    pub body: Option<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferType {
+    Json,
+    Streaming,
 }
 
-/// Captured HTTP response data.
-#[derive(Debug, Clone)]
-pub struct CapturedResponse {
-    pub status: u16,
-    pub headers: HeaderPairs,
-    pub body: Option<String>,
+impl std::fmt::Display for TransferType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json => write!(f, "JSON"),
+            Self::Streaming => write!(f, "Streaming"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -34,8 +33,12 @@ pub struct RequestLogEntry {
     pub timestamp: DateTime<Utc>,
     pub backend: String,
     pub latency_ms: u64,
-    pub request: Arc<CapturedRequest>,
-    pub response: Arc<CapturedResponse>,
+    pub method: String,
+    pub path: String,
+    pub status: u16,
+    pub model: Option<String>,
+    pub transfer_type: TransferType,
+    pub usage: Option<TokenUsage>,
 }
 
 impl RequestLogEntry {
@@ -43,16 +46,24 @@ impl RequestLogEntry {
         timestamp: DateTime<Utc>,
         backend: String,
         latency_ms: u64,
-        request: CapturedRequest,
-        response: CapturedResponse,
+        method: String,
+        path: String,
+        status: u16,
+        model: Option<String>,
+        transfer_type: TransferType,
+        usage: Option<TokenUsage>,
     ) -> Self {
         Self {
             id: NEXT_ENTRY_ID.fetch_add(1, Ordering::Relaxed),
             timestamp,
             backend,
             latency_ms,
-            request: Arc::new(request),
-            response: Arc::new(response),
+            method,
+            path,
+            status,
+            model,
+            transfer_type,
+            usage,
         }
     }
 }
@@ -105,7 +116,7 @@ impl StatsCollector {
         self.per_backend
             .entry(entry.backend.clone())
             .or_default()
-            .record(entry.response.status, entry.latency_ms);
+            .record(entry.status, entry.latency_ms);
         if self.log.len() >= MAX_LOG_ENTRIES {
             self.log.pop_front();
         }
@@ -153,17 +164,12 @@ mod tests {
             Utc::now(),
             backend.into(),
             latency_ms,
-            CapturedRequest {
-                method: method.into(),
-                path: path.into(),
-                headers: HeaderPairs::default(),
-                body: None,
-            },
-            CapturedResponse {
-                status,
-                headers: HeaderPairs::default(),
-                body: None,
-            },
+            method.into(),
+            path.into(),
+            status,
+            None,
+            TransferType::Json,
+            None,
         )
     }
 

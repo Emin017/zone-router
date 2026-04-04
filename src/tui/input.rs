@@ -115,7 +115,6 @@ pub fn handle_input(
                 rt.block_on(state.write()).switch_backend(tui.cursor);
             } else if tui.focus == FocusPanel::RequestLog && log_len > 0 {
                 tui.detail_scroll = 0;
-                tui.body_expanded = false;
                 // Validate log_cursor_id against current log; fall back to index lookup
                 let s = rt.block_on(state.read());
                 let id_valid = tui
@@ -207,9 +206,6 @@ pub fn handle_input_mode(
                 tui.model_map_rejected = false;
             }
             tui.mode = InputMode::Normal;
-        }
-        KeyCode::Enter if tui.mode == InputMode::DetailView => {
-            tui.body_expanded = !tui.body_expanded;
         }
         KeyCode::Enter => match &tui.mode {
             InputMode::AddName => {
@@ -433,7 +429,6 @@ pub fn handle_input_mode(
                                     tui.log_cursor =
                                         s.stats.log.len().saturating_sub(1) - (idx - 1);
                                     tui.detail_scroll = 0;
-                                    tui.body_expanded = false;
                                 }
                             } else {
                                 // Entry was evicted — resync to cursor position
@@ -461,7 +456,6 @@ pub fn handle_input_mode(
                                     tui.log_cursor =
                                         s.stats.log.len().saturating_sub(1) - (idx + 1);
                                     tui.detail_scroll = 0;
-                                    tui.body_expanded = false;
                                 }
                             } else {
                                 // Entry was evicted — resync to cursor position
@@ -515,11 +509,7 @@ pub fn parse_model_map_input(input: &str) -> Option<ModelMap> {
             _ => return None,
         }
     }
-    if mm.has_any() {
-        Some(mm)
-    } else {
-        None
-    }
+    if mm.has_any() { Some(mm) } else { None }
 }
 
 /// Format a `ModelMap` as a comma-separated `key=value` string for pre-filling input.
