@@ -37,10 +37,12 @@ fn make_log_entry(
     backend: &str,
     start: Instant,
     mut request: CapturedRequest,
+    req_original_size: usize,
     mut response: CapturedResponse,
+    resp_original_size: usize,
 ) -> RequestLogEntry {
-    request.body = truncate_body_for_log(request.body);
-    response.body = truncate_body_for_log(response.body);
+    request.body = truncate_body_for_log(request.body, req_original_size);
+    response.body = truncate_body_for_log(response.body, resp_original_size);
     RequestLogEntry::new(
         Utc::now(),
         backend.to_owned(),
@@ -113,19 +115,19 @@ fn extract_header_pairs(headers: &HeaderMap) -> HeaderPairs {
 const MAX_SSE_EVENTS: usize = 20;
 const MAX_CAPTURED_BODY_BYTES: usize = 256 * 1024; // 256 KB
 
-fn capture_body(raw: &[u8]) -> Option<String> {
+fn capture_body(raw: &[u8]) -> (Option<String>, usize) {
     if raw.is_empty() {
-        return None;
+        return (None, 0);
     }
+    let original_size = raw.len();
     if raw.len() <= MAX_CAPTURED_BODY_BYTES {
-        Some(String::from_utf8_lossy(raw).into_owned())
+        (
+            Some(String::from_utf8_lossy(raw).into_owned()),
+            original_size,
+        )
     } else {
         let truncated = String::from_utf8_lossy(&raw[..MAX_CAPTURED_BODY_BYTES]);
-        Some(format!(
-            "{}\n... (truncated, {} bytes total)",
-            truncated,
-            raw.len()
-        ))
+        (Some(truncated.into_owned()), original_size)
     }
 }
 
@@ -371,7 +373,7 @@ pub async fn proxy_handler(
         None => (body_bytes, false),
     };
 
-    let req_body = capture_body(&body_bytes);
+    let (req_body, req_original_size) = capture_body(&body_bytes);
 
     // Strip body-dependent headers only when the payload actually changed;
     // reqwest will recalculate Content-Length from the actual body.
@@ -448,6 +450,7 @@ pub async fn proxy_handler(
 
                 tokio::spawn(async move {
                     let sse_body = done_rx.await.unwrap_or(None);
+                    let sse_size = sse_body.as_ref().map_or(0, |s| s.len());
                     let entry = make_log_entry(
                         &backend_name,
                         start,
@@ -457,11 +460,13 @@ pub async fn proxy_handler(
                             headers: req_headers,
                             body: req_body,
                         },
+                        req_original_size,
                         CapturedResponse {
                             status,
                             headers: resp_headers,
                             body: sse_body,
                         },
+                        sse_size,
                     );
                     state_clone.write().await.stats.record(entry);
                 });
@@ -474,7 +479,7 @@ pub async fn proxy_handler(
                     .into_response()
             } else {
                 let resp_body_bytes = resp.bytes().await.unwrap_or_default();
-                let resp_body_str = capture_body(&resp_body_bytes);
+                let (resp_body_str, resp_original_size) = capture_body(&resp_body_bytes);
                 let entry = make_log_entry(
                     &backend_name,
                     start,
@@ -484,11 +489,13 @@ pub async fn proxy_handler(
                         headers: req_headers,
                         body: req_body,
                     },
+                    req_original_size,
                     CapturedResponse {
                         status,
                         headers: resp_headers,
                         body: resp_body_str,
                     },
+                    resp_original_size,
                 );
                 state.write().await.stats.record(entry);
 
@@ -510,11 +517,13 @@ pub async fn proxy_handler(
                     headers: req_headers,
                     body: req_body,
                 },
+                req_original_size,
                 CapturedResponse {
                     status: 502,
                     headers: HeaderPairs::default(),
                     body: None,
                 },
+                0,
             );
             state.write().await.stats.record(entry);
             StatusCode::BAD_GATEWAY.into_response()

@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 const MAX_LOG_ENTRIES: usize = 500;
 const MAX_BODY_PREVIEW: usize = 4096;
@@ -34,8 +35,8 @@ pub struct RequestLogEntry {
     pub timestamp: DateTime<Utc>,
     pub backend: String,
     pub latency_ms: u64,
-    pub request: CapturedRequest,
-    pub response: CapturedResponse,
+    pub request: Arc<CapturedRequest>,
+    pub response: Arc<CapturedResponse>,
 }
 
 impl RequestLogEntry {
@@ -51,23 +52,28 @@ impl RequestLogEntry {
             timestamp,
             backend,
             latency_ms,
-            request,
-            response,
+            request: Arc::new(request),
+            response: Arc::new(response),
         }
     }
 }
 
 /// Truncate a body string to `MAX_BODY_PREVIEW` bytes for storage in log entries.
-pub fn truncate_body_for_log(body: Option<String>) -> Option<String> {
+/// `original_size` is the real payload size before any upstream truncation.
+pub fn truncate_body_for_log(body: Option<String>, original_size: usize) -> Option<String> {
     body.map(|s| {
         if s.len() <= MAX_BODY_PREVIEW {
-            s
+            if original_size > s.len() {
+                format!("{s}\n...(truncated, {original_size} bytes total)")
+            } else {
+                s
+            }
         } else {
             let mut end = MAX_BODY_PREVIEW;
             while end > 0 && !s.is_char_boundary(end) {
                 end -= 1;
             }
-            format!("{}...(truncated, {} bytes total)", &s[..end], s.len())
+            format!("{}...(truncated, {} bytes total)", &s[..end], original_size)
         }
     })
 }
