@@ -2279,17 +2279,47 @@ mod tui_tests {
             "Esc should reset model_map_rejected"
         );
 
-        // Verify model_map was not touched
-        let s = rt.block_on(state.read());
+        // Verify model_map was not touched during rejection/Esc
+        {
+            let s = rt.block_on(state.read());
+            assert_eq!(
+                s.config.backends[0]
+                    .model_map
+                    .as_ref()
+                    .unwrap()
+                    .sonnet
+                    .as_deref(),
+                Some("keep-me"),
+                "model_map should be untouched after Esc"
+            );
+        }
+
+        // Re-enter EditModelMap with empty input_buffer
+        tui.mode = InputMode::EditModelMap;
+        tui.cursor = 0;
+        tui.pending_name = "a".into();
+        tui.pending_url = "http://a".into();
+        tui.pending_token = "ta".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+        tui.input_buffer.clear();
+
+        // Empty Enter should restore normal behavior (clear model_map)
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
         assert_eq!(
-            s.config.backends[0]
+            tui.mode,
+            InputMode::Normal,
+            "empty Enter after Esc reset should transition to Normal"
+        );
+        assert!(
+            rt.block_on(state.read()).config.backends[0]
                 .model_map
-                .as_ref()
-                .unwrap()
-                .sonnet
-                .as_deref(),
-            Some("keep-me"),
-            "model_map should be untouched after Esc"
+                .is_none(),
+            "empty Enter after Esc reset should clear model_map"
         );
     }
 }
