@@ -136,6 +136,7 @@ pub fn handle_input_mode(
             tui.mode = InputMode::Normal;
             tui.input_buffer.clear();
             tui.auth_type_rejected = false;
+            tui.model_map_rejected = false;
         }
         KeyCode::Enter => match &tui.mode {
             InputMode::AddName => {
@@ -179,8 +180,10 @@ pub fn handle_input_mode(
             }
             InputMode::AddModelMap => {
                 let model_map = parse_model_map_input(&tui.input_buffer);
-                if model_map.is_none() && !tui.input_buffer.trim().is_empty() {
+                let input_empty = tui.input_buffer.trim().is_empty();
+                if model_map.is_none() && (!input_empty || tui.model_map_rejected) {
                     tui.input_buffer.clear();
+                    tui.model_map_rejected = true;
                     return;
                 }
                 let backend = Backend {
@@ -194,6 +197,7 @@ pub fn handle_input_mode(
                 rt.block_on(state.write()).add_backend(backend);
                 tui.input_buffer.clear();
                 tui.pending_auth_type = None;
+                tui.model_map_rejected = false;
                 tui.mode = InputMode::Normal;
             }
             InputMode::EditName => {
@@ -260,8 +264,10 @@ pub fn handle_input_mode(
             }
             InputMode::EditModelMap => {
                 let model_map = parse_model_map_input(&tui.input_buffer);
-                if model_map.is_none() && !tui.input_buffer.trim().is_empty() {
+                let input_empty = tui.input_buffer.trim().is_empty();
+                if model_map.is_none() && (!input_empty || tui.model_map_rejected) {
                     tui.input_buffer.clear();
+                    tui.model_map_rejected = true;
                     return;
                 }
                 rt.block_on(state.write()).update_backend(
@@ -275,6 +281,7 @@ pub fn handle_input_mode(
                 tui.input_buffer.clear();
                 tui.auth_type_rejected = false;
                 tui.pending_auth_type = None;
+                tui.model_map_rejected = false;
                 tui.mode = InputMode::Normal;
             }
             InputMode::Search => {

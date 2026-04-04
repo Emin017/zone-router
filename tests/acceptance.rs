@@ -2032,4 +2032,118 @@ mod tui_tests {
             }
         }
     }
+
+    #[test]
+    fn edit_model_map_empty_enter_after_rejection_preserves_existing() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+
+        // Set a model_map on backend 0
+        {
+            let mut s = rt.block_on(state.write());
+            s.config.backends[0].model_map = Some(zone_router::config::ModelMap {
+                haiku: None,
+                sonnet: Some("existing-model".into()),
+                opus: None,
+            });
+        }
+
+        // Fast-forward to EditModelMap
+        tui.mode = InputMode::EditModelMap;
+        tui.cursor = 0;
+        tui.pending_name = "a".into();
+        tui.pending_url = "http://a".into();
+        tui.pending_token = "ta".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Type invalid input
+        for c in "haiku:bad".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::EditModelMap);
+
+        // Press Enter again on empty buffer — should NOT wipe model_map
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(
+            tui.mode,
+            InputMode::EditModelMap,
+            "empty Enter after rejection should stay in EditModelMap"
+        );
+
+        // Verify model_map is still intact
+        let s = rt.block_on(state.read());
+        assert_eq!(
+            s.config.backends[0]
+                .model_map
+                .as_ref()
+                .unwrap()
+                .sonnet
+                .as_deref(),
+            Some("existing-model"),
+            "existing model_map should not be wiped by empty Enter after rejection"
+        );
+    }
+
+    #[test]
+    fn add_model_map_empty_enter_after_rejection_stays_in_mode() {
+        let (mut tui, state, rt, _dir) = make_tui_and_state();
+        let initial_count = rt.block_on(state.read()).config.backends.len();
+
+        // Fast-forward to AddModelMap
+        tui.mode = InputMode::AddModelMap;
+        tui.pending_name = "post-reject".into();
+        tui.pending_url = "http://pr".into();
+        tui.pending_token = "tpr".into();
+        tui.pending_auth_type = Some(zone_router::config::AuthType::default());
+
+        // Type invalid input
+        for c in "foo=bar".chars() {
+            zone_router::tui::input::handle_input_mode(
+                key(KeyCode::Char(c)),
+                &mut tui,
+                &state,
+                rt.handle(),
+            );
+        }
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(tui.mode, InputMode::AddModelMap);
+
+        // Press Enter again on empty buffer — should NOT create backend
+        zone_router::tui::input::handle_input_mode(
+            key(KeyCode::Enter),
+            &mut tui,
+            &state,
+            rt.handle(),
+        );
+        assert_eq!(
+            tui.mode,
+            InputMode::AddModelMap,
+            "empty Enter after rejection should stay in AddModelMap"
+        );
+        assert_eq!(
+            rt.block_on(state.read()).config.backends.len(),
+            initial_count,
+            "backend should not be created by empty Enter after rejection"
+        );
+    }
 }
