@@ -382,6 +382,7 @@ pub async fn proxy_handler(
         h.remove(reqwest::header::CONTENT_LENGTH);
         h.remove("content-md5");
         h.remove("digest");
+        h.remove("content-digest");
         h
     } else {
         forwarded_headers
@@ -392,7 +393,10 @@ pub async fn proxy_handler(
     let mut req_headers = extract_header_pairs(&headers);
     if body_changed {
         req_headers.0.retain(|(name, _)| {
-            !matches!(name.as_str(), "content-length" | "content-md5" | "digest")
+            !matches!(
+                name.as_str(),
+                "content-length" | "content-md5" | "digest" | "content-digest"
+            )
         });
     }
 
@@ -450,6 +454,10 @@ pub async fn proxy_handler(
 
                 tokio::spawn(async move {
                     let sse_body = done_rx.await.unwrap_or(None);
+                    // SSE bodies are already capped and carry their own truncation
+                    // marker from SseBufferingStream::drop. Pass the preview length
+                    // as original_size so truncate_body_for_log preserves the
+                    // existing marker text rather than replacing it with a byte count.
                     let sse_size = sse_body.as_ref().map_or(0, |s| s.len());
                     let entry = make_log_entry(
                         &backend_name,
