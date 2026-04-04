@@ -73,7 +73,10 @@ fn extract_header_pairs(headers: &HeaderMap) -> HeaderPairs {
             .iter()
             .filter(|(name, _)| {
                 let n = name.as_str().to_lowercase();
-                n != AUTH_HEADER && n != "authorization"
+                !matches!(
+                    n.as_str(),
+                    "x-api-key" | "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
+                )
             })
             .filter_map(|(name, value)| {
                 value
@@ -137,6 +140,9 @@ struct SseBufferingStream<S> {
     /// Carry buffer holding bytes not yet terminated by a blank line.
     carry: Vec<u8>,
     event_count: usize,
+    /// Set when carry was flushed due to overflow, so the next delimiter
+    /// still counts the oversized frame as one data event.
+    carry_flushed_data: bool,
 }
 
 /// Returns true if the SSE frame contains a `data:` field line,
@@ -189,10 +195,12 @@ where
                     let event_bytes = self.carry[..delim_end].to_vec();
                     self.carry = self.carry[delim_end..].to_vec();
 
-                    if !is_data_event(&event_bytes) {
+                    if self.carry_flushed_data || is_data_event(&event_bytes) {
+                        self.event_count += 1;
+                        self.carry_flushed_data = false;
+                    } else {
                         continue;
                     }
-                    self.event_count += 1;
                     if self.event_count <= MAX_SSE_EVENTS
                         && self.preview.len() < MAX_CAPTURED_BODY_BYTES
                     {
@@ -208,10 +216,10 @@ where
 
                 // If carry itself has grown past the cap with no delimiter in sight,
                 // flush what we can into preview and discard the excess bytes.
-                // Do NOT increment event_count here — the oversized frame is still
-                // a single logical event that will be counted when the delimiter
-                // eventually arrives or when Drop flushes the remaining carry.
+                // Record that we flushed data so the next delimiter still counts
+                // this oversized frame as one event.
                 if self.carry.len() > MAX_CAPTURED_BODY_BYTES {
+                    let has_data = is_data_event(&self.carry);
                     if self.event_count < MAX_SSE_EVENTS
                         && self.preview.len() < MAX_CAPTURED_BODY_BYTES
                     {
@@ -221,6 +229,9 @@ where
                         self.preview.extend_from_slice(&flush);
                     }
                     self.carry.clear();
+                    if has_data {
+                        self.carry_flushed_data = true;
+                    }
                 }
             }
         }
@@ -400,6 +411,7 @@ pub async fn proxy_handler(
                     preview: Vec::new(),
                     carry: Vec::new(),
                     event_count: 0,
+                    carry_flushed_data: false,
                 };
                 let body = Body::from_stream(wrapped);
 
