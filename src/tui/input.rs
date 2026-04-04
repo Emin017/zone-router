@@ -17,6 +17,17 @@ fn resolve_auth_type(input: &str, default: AuthType, rejected: bool) -> Option<A
     }
 }
 
+/// Resolve model-map from the input buffer, returning `None` on invalid/rejected input.
+/// When input is empty and not previously rejected, returns `Some(None)` (skip).
+/// Valid input returns `Some(Some(map))`. Invalid or post-rejection empty returns `None`.
+fn resolve_model_map(input: &str, rejected: bool) -> Option<Option<ModelMap>> {
+    match parse_model_map_input(input) {
+        Some(mm) => Some(Some(mm)),
+        None if input.trim().is_empty() && !rejected => Some(None),
+        None => None,
+    }
+}
+
 /// Returns true if the TUI should exit.
 pub fn handle_input(
     key: KeyEvent,
@@ -179,13 +190,12 @@ pub fn handle_input_mode(
                 tui.mode = InputMode::Normal;
             }
             InputMode::AddModelMap => {
-                let model_map = parse_model_map_input(&tui.input_buffer);
-                let input_empty = tui.input_buffer.trim().is_empty();
-                if model_map.is_none() && (!input_empty || tui.model_map_rejected) {
+                let Some(model_map) = resolve_model_map(&tui.input_buffer, tui.model_map_rejected)
+                else {
                     tui.input_buffer.clear();
                     tui.model_map_rejected = true;
                     return;
-                }
+                };
                 let backend = Backend {
                     name: tui.pending_name.clone(),
                     url: tui.pending_url.clone(),
@@ -263,13 +273,12 @@ pub fn handle_input_mode(
                 tui.mode = InputMode::Normal;
             }
             InputMode::EditModelMap => {
-                let model_map = parse_model_map_input(&tui.input_buffer);
-                let input_empty = tui.input_buffer.trim().is_empty();
-                if model_map.is_none() && (!input_empty || tui.model_map_rejected) {
+                let Some(model_map) = resolve_model_map(&tui.input_buffer, tui.model_map_rejected)
+                else {
                     tui.input_buffer.clear();
                     tui.model_map_rejected = true;
                     return;
-                }
+                };
                 rt.block_on(state.write()).update_backend(
                     tui.cursor,
                     tui.pending_name.clone(),
