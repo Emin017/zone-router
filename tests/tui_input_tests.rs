@@ -910,12 +910,12 @@ fn backend_list_shows_m_marker_when_model_map_present() {
         zone_router::state::AppState::new(config, dir.path().join("m-marker.toml")).unwrap(),
     ));
     let app_state = rt.block_on(state.read()).clone();
-    let tui_state = TuiState::default();
+    let mut tui_state = TuiState::default();
 
     let backend = ratatui::backend::TestBackend::new(80, 24);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal
-        .draw(|frame| zone_router::tui::ui::draw(frame, &app_state, &tui_state))
+        .draw(|frame| zone_router::tui::ui::draw(frame, &app_state, &mut tui_state))
         .unwrap();
 
     let buf = terminal.backend().buffer().clone();

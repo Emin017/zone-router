@@ -38,7 +38,7 @@ fn make_app_state_with_log(
 
 fn render_to_string(
     state: &zone_router::state::AppState,
-    tui: &TuiState,
+    tui: &mut TuiState,
     width: u16,
     height: u16,
 ) -> String {
@@ -68,12 +68,12 @@ fn render_normal_mode_shows_request_log_and_help_bar() {
     let state_arc = make_app_state_with_log(&dir);
     let rt = tokio::runtime::Runtime::new().unwrap();
     let state = rt.block_on(state_arc.read()).clone();
-    let tui = TuiState {
+    let mut tui = TuiState {
         focus: FocusPanel::RequestLog,
         ..TuiState::default()
     };
 
-    let output = render_to_string(&state, &tui, 100, 30);
+    let output = render_to_string(&state, &mut tui, 100, 30);
 
     assert!(
         output.contains("Request Log"),
@@ -102,7 +102,7 @@ fn render_detail_view_shows_floating_panel_with_content() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let state = rt.block_on(state_arc.read()).clone();
     let entry_id = state.stats.log[0].id;
-    let tui = TuiState {
+    let mut tui = TuiState {
         mode: InputMode::DetailView,
         focus: FocusPanel::RequestLog,
         detail_entry_id: Some(entry_id),
@@ -110,7 +110,7 @@ fn render_detail_view_shows_floating_panel_with_content() {
         ..TuiState::default()
     };
 
-    let output = render_to_string(&state, &tui, 100, 40);
+    let output = render_to_string(&state, &mut tui, 100, 40);
 
     assert!(output.contains("Request Detail"), "should show panel title");
     assert!(output.contains("POST"), "should show method");
@@ -132,14 +132,14 @@ fn render_detail_view_help_bar_shows_detail_keys() {
     let state_arc = make_app_state_with_log(&dir);
     let rt = tokio::runtime::Runtime::new().unwrap();
     let state = rt.block_on(state_arc.read()).clone();
-    let tui = TuiState {
+    let mut tui = TuiState {
         focus: FocusPanel::RequestLog,
         mode: InputMode::DetailView,
         log_cursor: 0,
         ..TuiState::default()
     };
 
-    let output = render_to_string(&state, &tui, 100, 30);
+    let output = render_to_string(&state, &mut tui, 100, 30);
 
     // Help bar should show DetailView keys
     assert!(
@@ -173,23 +173,23 @@ fn render_help_bar_restores_normal_keys_after_close() {
     let state = rt.block_on(state_arc.read()).clone();
 
     // First verify DetailView
-    let tui_detail = TuiState {
+    let mut tui_detail = TuiState {
         focus: FocusPanel::RequestLog,
         mode: InputMode::DetailView,
         log_cursor: 0,
         ..TuiState::default()
     };
-    let output_detail = render_to_string(&state, &tui_detail, 100, 30);
+    let output_detail = render_to_string(&state, &mut tui_detail, 100, 30);
     assert!(output_detail.contains("[Esc/h] close"));
 
     // Now verify Normal after closing
-    let tui_normal = TuiState {
+    let mut tui_normal = TuiState {
         focus: FocusPanel::RequestLog,
         mode: InputMode::Normal,
         log_cursor: 0,
         ..TuiState::default()
     };
-    let output_normal = render_to_string(&state, &tui_normal, 100, 30);
+    let output_normal = render_to_string(&state, &mut tui_normal, 100, 30);
     assert!(
         output_normal.contains("[q] quit"),
         "Normal help bar should be restored after close"
@@ -209,7 +209,7 @@ fn render_popup_geometry_is_centered_in_log_area() {
     let state_arc = make_app_state_with_log(&dir);
     let rt = tokio::runtime::Runtime::new().unwrap();
     let state = rt.block_on(state_arc.read()).clone();
-    let tui = TuiState {
+    let mut tui = TuiState {
         focus: FocusPanel::RequestLog,
         mode: InputMode::DetailView,
         log_cursor: 0,
@@ -221,7 +221,7 @@ fn render_popup_geometry_is_centered_in_log_area() {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
-        .draw(|frame| zone_router::tui::ui::draw(frame, &state, &tui))
+        .draw(|frame| zone_router::tui::ui::draw(frame, &state, &mut tui))
         .unwrap();
     let buffer = terminal.backend().buffer().clone();
 
@@ -284,7 +284,7 @@ fn render_popup_exact_centered_geometry() {
     let state_arc = make_app_state_with_log(&dir);
     let rt = tokio::runtime::Runtime::new().unwrap();
     let state = rt.block_on(state_arc.read()).clone();
-    let tui = TuiState {
+    let mut tui = TuiState {
         focus: FocusPanel::RequestLog,
         mode: InputMode::DetailView,
         log_cursor: 0,
@@ -296,7 +296,7 @@ fn render_popup_exact_centered_geometry() {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
-        .draw(|frame| zone_router::tui::ui::draw(frame, &state, &tui))
+        .draw(|frame| zone_router::tui::ui::draw(frame, &state, &mut tui))
         .unwrap();
     let buffer = terminal.backend().buffer().clone();
 
@@ -413,7 +413,7 @@ fn render_log_auto_scroll_and_highlight() {
 
     // Cursor at 0: newest entry (backend-29) should be at or near the top
     // and the cursor marker ">" should be visible
-    let tui_top = TuiState {
+    let mut tui_top = TuiState {
         focus: FocusPanel::RequestLog,
         log_cursor: 0,
         ..TuiState::default()
@@ -421,7 +421,7 @@ fn render_log_auto_scroll_and_highlight() {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
-        .draw(|frame| zone_router::tui::ui::draw(frame, &app, &tui_top))
+        .draw(|frame| zone_router::tui::ui::draw(frame, &app, &mut tui_top))
         .unwrap();
     let buf = terminal.backend().buffer().clone();
     let mut output_top = String::new();
@@ -442,7 +442,7 @@ fn render_log_auto_scroll_and_highlight() {
 
     // Move cursor to 25 (deep into the list): backend-4 is the 25th from newest
     // The selected entry should be visible and older entries near top should scroll out
-    let tui_deep = TuiState {
+    let mut tui_deep = TuiState {
         focus: FocusPanel::RequestLog,
         log_cursor: 25,
         ..TuiState::default()
@@ -450,7 +450,7 @@ fn render_log_auto_scroll_and_highlight() {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
-        .draw(|frame| zone_router::tui::ui::draw(frame, &app, &tui_deep))
+        .draw(|frame| zone_router::tui::ui::draw(frame, &app, &mut tui_deep))
         .unwrap();
     let buf = terminal.backend().buffer().clone();
     let mut output_deep = String::new();

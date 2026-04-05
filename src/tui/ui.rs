@@ -16,7 +16,7 @@ fn focus_border_style(panel: &FocusPanel, current: &FocusPanel) -> Style {
     }
 }
 
-pub fn draw(frame: &mut Frame, state: &AppState, tui: &TuiState) {
+pub fn draw(frame: &mut Frame, state: &AppState, tui: &mut TuiState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -260,7 +260,7 @@ fn build_detail_lines(entry: &RequestLogEntry) -> Vec<Line<'static>> {
     lines
 }
 
-fn draw_detail_panel(frame: &mut Frame, state: &AppState, tui: &TuiState, log_area: Rect) {
+fn draw_detail_panel(frame: &mut Frame, state: &AppState, tui: &mut TuiState, log_area: Rect) {
     let log_len = state.stats.log.len();
     if log_len == 0 {
         return;
@@ -294,7 +294,8 @@ fn draw_detail_panel(frame: &mut Frame, state: &AppState, tui: &TuiState, log_ar
     let max_scroll = lines
         .len()
         .saturating_sub(panel_area.height.saturating_sub(2) as usize);
-    let scroll = tui.detail_scroll.min(max_scroll);
+    tui.detail_scroll = tui.detail_scroll.min(max_scroll);
+    let scroll = tui.detail_scroll;
 
     let block = Block::default()
         .borders(Borders::ALL)
