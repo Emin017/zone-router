@@ -2,7 +2,7 @@
 name = "zone-router"
 version = "0.1.0"
 edition = "2021"
-authors = ["Emin <example@example.com>"]
+authors = ["Emin <me@emin.chat>"]
 description = "A lightweight HTTP proxy for routing Claude Code LLM API requests to multiple backends"
 
 [[bin]]
