@@ -55,9 +55,19 @@ fn make_log_entry(
 }
 
 fn extract_model(body: &[u8]) -> Option<String> {
-    serde_json::from_slice::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| v.get("model")?.as_str().map(String::from))
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    // Single-message requests: top-level "model"
+    if let Some(m) = v.get("model").and_then(|m| m.as_str()) {
+        return Some(m.to_owned());
+    }
+    // Batch requests: requests[0].params.model
+    v.get("requests")?
+        .as_array()?
+        .first()?
+        .get("params")?
+        .get("model")?
+        .as_str()
+        .map(String::from)
 }
 
 fn extract_usage(body: &[u8]) -> Option<TokenUsage> {
@@ -125,11 +135,21 @@ fn extract_usage_from_tail(tail: &[u8]) -> Option<TokenUsage> {
         if !payload.contains("usage") {
             continue;
         }
-        let v: serde_json::Value = serde_json::from_str(payload).ok()?;
-        let usage = v.get("usage")?;
+        let Some(v) = serde_json::from_str::<serde_json::Value>(payload).ok() else {
+            continue;
+        };
+        let Some(usage) = v.get("usage") else {
+            continue;
+        };
+        let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let Some(output) = usage.get("output_tokens").and_then(|v| v.as_u64()) else {
+            continue;
+        };
         return Some(TokenUsage {
-            input_tokens: usage.get("input_tokens")?.as_u64()?,
-            output_tokens: usage.get("output_tokens")?.as_u64()?,
+            input_tokens: input,
+            output_tokens: output,
         });
     }
     None
@@ -395,10 +415,45 @@ mod tests {
     }
 
     #[test]
+    fn extract_usage_skips_partial_frame_finds_valid() {
+        // A recent frame has only output_tokens; an older frame has both.
+        let tail = b"data: {\"usage\":{\"input_tokens\":5,\"output_tokens\":20}}\n\
+                     data: {\"usage\":{\"output_tokens\":30}}\n";
+        let usage =
+            extract_usage_from_tail(tail).expect("should skip partial and find complete frame");
+        assert_eq!(usage.input_tokens, 5);
+        assert_eq!(usage.output_tokens, 20);
+    }
+
+    #[test]
     fn extract_usage_works_on_clean_tail() {
         let tail = b"data: {\"usage\":{\"input_tokens\":10,\"output_tokens\":25}}\n";
         let usage = extract_usage_from_tail(tail).expect("should parse clean tail");
         assert_eq!(usage.input_tokens, 10);
         assert_eq!(usage.output_tokens, 25);
+    }
+
+    #[test]
+    fn extract_model_from_top_level() {
+        let body = br#"{"model":"claude-sonnet-4-20250514","stream":true}"#;
+        assert_eq!(
+            extract_model(body).as_deref(),
+            Some("claude-sonnet-4-20250514")
+        );
+    }
+
+    #[test]
+    fn extract_model_from_batch_request() {
+        let body = br#"{"requests":[{"params":{"model":"claude-haiku-4-5-20251001"}}]}"#;
+        assert_eq!(
+            extract_model(body).as_deref(),
+            Some("claude-haiku-4-5-20251001")
+        );
+    }
+
+    #[test]
+    fn extract_model_none_when_absent() {
+        let body = br#"{"stream":true}"#;
+        assert!(extract_model(body).is_none());
     }
 }
