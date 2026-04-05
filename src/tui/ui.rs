@@ -112,10 +112,12 @@ fn draw_stats_panel(frame: &mut Frame, state: &AppState, area: Rect) {
         .and_then(|b| state.stats.per_backend.get(&b.name))
         .map(|s| {
             vec![
-                Line::from(format!(" Reqs:  {}", s.total_requests)),
-                Line::from(format!(" OK:    {}", s.success_count)),
-                Line::from(format!(" Err:   {}", s.error_count)),
-                Line::from(format!(" Avg:   {:.0}ms", s.avg_latency_ms())),
+                Line::from(format!(" Reqs:      {}", s.total_requests)),
+                Line::from(format!(" OK:        {}", s.success_count)),
+                Line::from(format!(" Err:       {}", s.error_count)),
+                Line::from(format!(" Avg:       {:.0}ms", s.avg_latency_ms())),
+                Line::from(format!(" Token In:  {}", s.total_input_tokens)),
+                Line::from(format!(" Token Out: {}", s.total_output_tokens)),
             ]
         })
         .unwrap_or_else(|| vec![Line::from(" No stats yet")]);
