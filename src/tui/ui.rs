@@ -106,6 +106,26 @@ fn draw_backend_list(frame: &mut Frame, state: &AppState, tui: &TuiState, area: 
     frame.render_widget(list, area);
 }
 
+fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        let v = n as f64 / 1_000_000.0;
+        if (v.fract().abs()) < 0.05 {
+            format!("{}M", v as u64)
+        } else {
+            format!("{v:.1}M")
+        }
+    } else if n >= 1_000 {
+        let v = n as f64 / 1_000.0;
+        if (v.fract().abs()) < 0.05 {
+            format!("{}K", v as u64)
+        } else {
+            format!("{v:.1}K")
+        }
+    } else {
+        n.to_string()
+    }
+}
+
 fn draw_stats_panel(frame: &mut Frame, state: &AppState, area: Rect) {
     let stats_text = state
         .active_backend()
@@ -116,8 +136,14 @@ fn draw_stats_panel(frame: &mut Frame, state: &AppState, area: Rect) {
                 Line::from(format!(" OK:        {}", s.success_count)),
                 Line::from(format!(" Err:       {}", s.error_count)),
                 Line::from(format!(" Avg:       {:.0}ms", s.avg_latency_ms())),
-                Line::from(format!(" Token In:  {}", s.total_input_tokens)),
-                Line::from(format!(" Token Out: {}", s.total_output_tokens)),
+                Line::from(format!(
+                    " Token In:  {}",
+                    format_tokens(s.total_input_tokens)
+                )),
+                Line::from(format!(
+                    " Token Out: {}",
+                    format_tokens(s.total_output_tokens)
+                )),
             ]
         })
         .unwrap_or_else(|| vec![Line::from(" No stats yet")]);
