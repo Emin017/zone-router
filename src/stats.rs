@@ -1,16 +1,72 @@
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-const MAX_LOG_ENTRIES: usize = 1000;
+const MAX_LOG_ENTRIES: usize = 500;
+
+static NEXT_ENTRY_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferType {
+    Json,
+    Streaming,
+}
+
+impl std::fmt::Display for TransferType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json => write!(f, "JSON"),
+            Self::Streaming => write!(f, "Streaming"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
 
 #[derive(Debug, Clone)]
 pub struct RequestLogEntry {
+    pub id: u64,
     pub timestamp: DateTime<Utc>,
     pub backend: String,
+    pub latency_ms: u64,
     pub method: String,
     pub path: String,
     pub status: u16,
-    pub latency_ms: u64,
+    pub model: Option<String>,
+    pub transfer_type: TransferType,
+    pub usage: Option<TokenUsage>,
+}
+
+impl RequestLogEntry {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        timestamp: DateTime<Utc>,
+        backend: String,
+        latency_ms: u64,
+        method: String,
+        path: String,
+        status: u16,
+        model: Option<String>,
+        transfer_type: TransferType,
+        usage: Option<TokenUsage>,
+    ) -> Self {
+        Self {
+            id: NEXT_ENTRY_ID.fetch_add(1, Ordering::Relaxed),
+            timestamp,
+            backend,
+            latency_ms,
+            method,
+            path,
+            status,
+            model,
+            transfer_type,
+            usage,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -98,42 +154,41 @@ mod tests {
         assert_eq!(BackendStats::default().avg_latency_ms(), 0.0);
     }
 
+    fn test_entry(
+        backend: &str,
+        method: &str,
+        path: &str,
+        status: u16,
+        latency_ms: u64,
+    ) -> RequestLogEntry {
+        RequestLogEntry::new(
+            Utc::now(),
+            backend.into(),
+            latency_ms,
+            method.into(),
+            path.into(),
+            status,
+            None,
+            TransferType::Json,
+            None,
+        )
+    }
+
     #[test]
     fn stats_collector_caps_at_max() {
         let mut collector = StatsCollector::default();
-        for i in 0..1100 {
-            collector.record(RequestLogEntry {
-                timestamp: Utc::now(),
-                backend: "test".into(),
-                method: "POST".into(),
-                path: "/v1/messages".into(),
-                status: 200,
-                latency_ms: i,
-            });
+        for i in 0..700 {
+            collector.record(test_entry("test", "POST", "/v1/messages", 200, i));
         }
         assert_eq!(collector.log.len(), MAX_LOG_ENTRIES);
-        assert_eq!(collector.log.front().unwrap().latency_ms, 100);
+        assert_eq!(collector.log.front().unwrap().latency_ms, 200);
     }
 
     #[test]
     fn stats_collector_tracks_per_backend() {
         let mut collector = StatsCollector::default();
-        collector.record(RequestLogEntry {
-            timestamp: Utc::now(),
-            backend: "a".into(),
-            method: "POST".into(),
-            path: "/".into(),
-            status: 200,
-            latency_ms: 100,
-        });
-        collector.record(RequestLogEntry {
-            timestamp: Utc::now(),
-            backend: "b".into(),
-            method: "POST".into(),
-            path: "/".into(),
-            status: 500,
-            latency_ms: 50,
-        });
+        collector.record(test_entry("a", "POST", "/", 200, 100));
+        collector.record(test_entry("b", "POST", "/", 500, 50));
         assert_eq!(collector.per_backend["a"].success_count, 1);
         assert_eq!(collector.per_backend["b"].error_count, 1);
     }

@@ -875,3 +875,213 @@ async fn model_map_rewrites_body_for_sse_response() {
         "SSE backend should receive rewritten model, got: {body_str}"
     );
 }
+
+// --- Model and usage extraction tests ---
+
+#[tokio::test]
+async fn logs_model_from_request_body() {
+    let (backend_url, _handle) = start_mock_backend().await;
+    let state = make_state(vec![("test", &backend_url, "tok")], "secret");
+    let router = zone_router::proxy::server::build_router(state.clone());
+
+    let _resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"claude-sonnet-4-20250514","max_tokens":100}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let s = state.read().await;
+    let entry = &s.stats.log[0];
+    assert_eq!(entry.model.as_deref(), Some("claude-sonnet-4-20250514"));
+    assert_eq!(entry.transfer_type, zone_router::stats::TransferType::Json);
+}
+
+#[tokio::test]
+async fn logs_none_model_for_non_json_body() {
+    let (backend_url, _handle) = start_mock_backend().await;
+    let state = make_state(vec![("test", &backend_url, "tok")], "secret");
+    let router = zone_router::proxy::server::build_router(state.clone());
+
+    let _resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .body(Body::from("not json"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let s = state.read().await;
+    let entry = &s.stats.log[0];
+    assert_eq!(entry.model, None);
+}
+
+async fn start_usage_backend() -> (String, tokio::task::JoinHandle<()>) {
+    let app = Router::new().route(
+        "/v1/messages",
+        post(|| async {
+            axum::Json(serde_json::json!({
+                "id": "msg_123",
+                "type": "message",
+                "usage": {
+                    "input_tokens": 42,
+                    "output_tokens": 137
+                }
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), handle)
+}
+
+#[tokio::test]
+async fn extracts_usage_from_json_response() {
+    let (backend_url, _handle) = start_usage_backend().await;
+    let state = make_state(vec![("usage-test", &backend_url, "tok")], "secret");
+    let router = zone_router::proxy::server::build_router(state.clone());
+
+    let _resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"claude-sonnet-4-20250514"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let s = state.read().await;
+    let entry = &s.stats.log[0];
+    let usage = entry.usage.expect("usage should be extracted");
+    assert_eq!(usage.input_tokens, 42);
+    assert_eq!(usage.output_tokens, 137);
+}
+
+async fn start_sse_usage_backend() -> (String, tokio::task::JoinHandle<()>) {
+    let app = Router::new().route(
+        "/v1/messages",
+        post(|| async {
+            let events = vec![
+                Ok::<_, std::convert::Infallible>(
+                    Event::default()
+                        .data(r#"{"type":"content_block_delta","delta":{"text":"Hi"}}"#),
+                ),
+                Ok(Event::default().data(
+                    r#"{"type":"message_delta","usage":{"input_tokens":10,"output_tokens":25}}"#,
+                )),
+            ];
+            Sse::new(stream::iter(events))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), handle)
+}
+
+#[tokio::test]
+async fn extracts_usage_from_sse_tail() {
+    let (backend_url, _handle) = start_sse_usage_backend().await;
+    let state = make_state(vec![("sse-usage", &backend_url, "tok")], "secret");
+    let router = zone_router::proxy::server::build_router(state.clone());
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"claude-sonnet-4-20250514","stream":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let _body = axum::body::to_bytes(resp.into_body(), 10 * 1024 * 1024)
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let s = state.read().await;
+    assert_eq!(s.stats.log.len(), 1);
+    let entry = &s.stats.log[0];
+    assert_eq!(
+        entry.transfer_type,
+        zone_router::stats::TransferType::Streaming
+    );
+    let usage = entry
+        .usage
+        .expect("SSE usage should be extracted from tail");
+    assert_eq!(usage.input_tokens, 10);
+    assert_eq!(usage.output_tokens, 25);
+}
+
+#[tokio::test]
+async fn sse_stream_without_usage_logs_none() {
+    let app = Router::new().route(
+        "/v1/messages",
+        post(|| async {
+            let events = vec![Ok::<_, std::convert::Infallible>(
+                Event::default().data(r#"{"type":"content_block_delta"}"#),
+            )];
+            Sse::new(stream::iter(events))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let _handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let state = make_state(
+        vec![("sse-no-usage", &format!("http://{addr}"), "tok")],
+        "secret",
+    );
+    let router = zone_router::proxy::server::build_router(state.clone());
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "secret")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let _body = axum::body::to_bytes(resp.into_body(), 10 * 1024 * 1024)
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let s = state.read().await;
+    let entry = &s.stats.log[0];
+    assert_eq!(
+        entry.transfer_type,
+        zone_router::stats::TransferType::Streaming
+    );
+    assert!(entry.usage.is_none(), "no usage event means None");
+}

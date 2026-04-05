@@ -1,6 +1,6 @@
 use crate::config::{AuthType, ModelMap};
 use crate::state::AppState;
-use crate::stats::RequestLogEntry;
+use crate::stats::{RequestLogEntry, TokenUsage, TransferType};
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
@@ -9,7 +9,6 @@ use bytes::Bytes;
 use chrono::Utc;
 use futures_util::Stream;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -31,66 +30,172 @@ std::thread_local! {
     static CLIENT: reqwest::Client = build_client();
 }
 
-/// A stream wrapper that sends a signal when dropped (stream fully consumed or connection closed).
-struct LogOnDropStream<S> {
-    inner: S,
-    done_tx: Option<tokio::sync::oneshot::Sender<()>>,
+#[allow(clippy::too_many_arguments)]
+fn make_log_entry(
+    backend: &str,
+    start: Instant,
+    method: String,
+    path: String,
+    status: u16,
+    model: Option<String>,
+    transfer_type: TransferType,
+    usage: Option<TokenUsage>,
+) -> RequestLogEntry {
+    RequestLogEntry::new(
+        Utc::now(),
+        backend.to_owned(),
+        start.elapsed().as_millis() as u64,
+        method,
+        path,
+        status,
+        model,
+        transfer_type,
+        usage,
+    )
 }
 
-impl<S> Stream for LogOnDropStream<S>
+fn extract_model(body: &[u8]) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    // Single-message requests: top-level "model"
+    if let Some(m) = v.get("model").and_then(|m| m.as_str()) {
+        return Some(m.to_owned());
+    }
+    // Batch requests: requests[0].params.model
+    v.get("requests")?
+        .as_array()?
+        .first()?
+        .get("params")?
+        .get("model")?
+        .as_str()
+        .map(String::from)
+}
+
+fn extract_usage(body: &[u8]) -> Option<TokenUsage> {
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let usage = v.get("usage")?;
+    Some(TokenUsage {
+        input_tokens: usage.get("input_tokens")?.as_u64()?,
+        output_tokens: usage.get("output_tokens")?.as_u64()?,
+    })
+}
+
+const SSE_TAIL_CAP: usize = 8 * 1024;
+
+struct SseTailStream<S> {
+    inner: S,
+    tail: Vec<u8>,
+    done_tx: Option<tokio::sync::oneshot::Sender<Option<TokenUsage>>>,
+}
+
+impl<S> Stream for SseTailStream<S>
 where
     S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
 {
     type Item = Result<Bytes, std::io::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.inner)
-            .poll_next(cx)
-            .map(|opt| opt.map(|r| r.map_err(std::io::Error::other)))
+        let poll = Pin::new(&mut self.inner).poll_next(cx);
+        if let Poll::Ready(Some(Ok(ref chunk))) = poll {
+            self.tail.extend_from_slice(chunk);
+            if self.tail.len() > SSE_TAIL_CAP {
+                let start = self.tail.len() - SSE_TAIL_CAP;
+                self.tail = self.tail[start..].to_vec();
+            }
+        }
+        poll.map(|opt| opt.map(|r| r.map_err(std::io::Error::other)))
     }
 }
 
-impl<S> Drop for LogOnDropStream<S> {
+impl<S> Drop for SseTailStream<S> {
     fn drop(&mut self) {
         if let Some(tx) = self.done_tx.take() {
-            let _ = tx.send(());
+            let usage = extract_usage_from_tail(&self.tail);
+            let _ = tx.send(usage);
         }
     }
 }
 
-fn make_log_entry(
-    backend: &str,
-    method: &str,
-    path: &str,
-    status: u16,
-    start: Instant,
-) -> RequestLogEntry {
-    RequestLogEntry {
-        timestamp: Utc::now(),
-        backend: backend.to_owned(),
-        method: method.to_owned(),
-        path: path.to_owned(),
-        status,
-        latency_ms: start.elapsed().as_millis() as u64,
+fn extract_usage_from_tail(tail: &[u8]) -> Option<TokenUsage> {
+    // Truncation can split a leading multibyte char, leaving up to 3
+    // orphan continuation bytes (0x80..=0xBF). Skip them so from_utf8
+    // doesn't reject the entire buffer.
+    let start = tail
+        .iter()
+        .position(|&b| b & 0b1100_0000 != 0b1000_0000)
+        .unwrap_or(tail.len());
+    let text = std::str::from_utf8(tail.get(start..)?).ok()?;
+    for line in text.lines().rev() {
+        let payload = match line
+            .strip_prefix("data: ")
+            .or_else(|| line.strip_prefix("data:"))
+        {
+            Some(p) => p,
+            None => continue,
+        };
+        if !payload.contains("usage") {
+            continue;
+        }
+        let Some(v) = serde_json::from_str::<serde_json::Value>(payload).ok() else {
+            continue;
+        };
+        let Some(usage) = v.get("usage") else {
+            continue;
+        };
+        let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let Some(output) = usage.get("output_tokens").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        return Some(TokenUsage {
+            input_tokens: input,
+            output_tokens: output,
+        });
+    }
+    None
+}
+
+fn rewrite_model(body: Bytes, mm: &ModelMap) -> (Bytes, bool) {
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return (body, false);
+    };
+    let mut changed = false;
+
+    // Top-level model field (single message requests)
+    if let Some(model_str) = value.get("model").and_then(|v| v.as_str()) {
+        if let Some(replacement) = mm.resolve(model_str) {
+            value["model"] = serde_json::Value::String(replacement.to_owned());
+            changed = true;
+        }
+    }
+
+    // Batch requests: requests[*].params.model
+    if let Some(requests) = value.get_mut("requests").and_then(|v| v.as_array_mut()) {
+        for req in requests.iter_mut() {
+            if let Some(model_str) = req
+                .get("params")
+                .and_then(|p| p.get("model"))
+                .and_then(|v| v.as_str())
+            {
+                if let Some(replacement) = mm.resolve(model_str) {
+                    req["params"]["model"] = serde_json::Value::String(replacement.to_owned());
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if !changed {
+        return (body, false);
+    }
+    match serde_json::to_vec(&value) {
+        Ok(v) => (Bytes::from(v), true),
+        Err(_) => (body, false),
     }
 }
 
-fn rewrite_model(body: Bytes, mm: &ModelMap) -> Bytes {
-    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return body;
-    };
-    let Some(model_str) = value.get("model").and_then(|v| v.as_str()) else {
-        return body;
-    };
-    let Some(replacement) = mm.resolve(model_str) else {
-        return body;
-    };
-    value["model"] = serde_json::Value::String(replacement.to_owned());
-    serde_json::to_vec(&value).map(Bytes::from).unwrap_or(body)
-}
-
 pub async fn proxy_handler(
-    State(state): State<Arc<RwLock<AppState>>>,
+    State(state): State<std::sync::Arc<RwLock<AppState>>>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -107,20 +212,16 @@ pub async fn proxy_handler(
         (s.local_token.clone(), backend)
     };
 
-    let request_token = if headers.get(AUTH_HEADER).is_some() {
-        headers
-            .get(AUTH_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-    } else {
-        headers
+    let request_token = match headers.get(AUTH_HEADER) {
+        Some(v) => v.to_str().unwrap_or(""),
+        None => headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| {
                 v.get(7..)
                     .filter(|_| v[..7].eq_ignore_ascii_case("Bearer "))
             })
-            .unwrap_or("")
+            .unwrap_or(""),
     };
 
     if request_token != local_token {
@@ -158,13 +259,13 @@ pub async fn proxy_handler(
 
     let (body_bytes, body_changed) = match backend.model_map.as_ref().filter(|mm| mm.has_any()) {
         Some(mm) => {
-            let original_ptr = body_bytes.as_ptr();
-            let rewritten = rewrite_model(body_bytes, mm);
-            let changed = rewritten.as_ptr() != original_ptr;
+            let (rewritten, changed) = rewrite_model(body_bytes, mm);
             (rewritten, changed)
         }
         None => (body_bytes, false),
     };
+
+    let model = extract_model(&body_bytes);
 
     // Strip body-dependent headers only when the payload actually changed;
     // reqwest will recalculate Content-Length from the actual body.
@@ -173,6 +274,7 @@ pub async fn proxy_handler(
         h.remove(reqwest::header::CONTENT_LENGTH);
         h.remove("content-md5");
         h.remove("digest");
+        h.remove("content-digest");
         h
     } else {
         forwarded_headers
@@ -216,16 +318,26 @@ pub async fn proxy_handler(
 
             if is_stream {
                 let state_clone = state.clone();
-                let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
-                let wrapped = LogOnDropStream {
+                let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Option<TokenUsage>>();
+                let wrapped = SseTailStream {
                     inner: resp.bytes_stream(),
+                    tail: Vec::new(),
                     done_tx: Some(done_tx),
                 };
                 let body = Body::from_stream(wrapped);
 
                 tokio::spawn(async move {
-                    let _ = done_rx.await;
-                    let entry = make_log_entry(&backend_name, &method_str, &path, status, start);
+                    let usage = done_rx.await.unwrap_or(None);
+                    let entry = make_log_entry(
+                        &backend_name,
+                        start,
+                        method_str,
+                        path,
+                        status,
+                        model,
+                        TransferType::Streaming,
+                        usage,
+                    );
                     state_clone.write().await.stats.record(entry);
                 });
 
@@ -236,20 +348,39 @@ pub async fn proxy_handler(
                 )
                     .into_response()
             } else {
-                let resp_body = resp.bytes().await.unwrap_or_default();
-                let entry = make_log_entry(&backend_name, &method_str, &path, status, start);
+                let resp_body_bytes = resp.bytes().await.unwrap_or_default();
+                let usage = extract_usage(&resp_body_bytes);
+                let entry = make_log_entry(
+                    &backend_name,
+                    start,
+                    method_str,
+                    path,
+                    status,
+                    model,
+                    TransferType::Json,
+                    usage,
+                );
                 state.write().await.stats.record(entry);
 
                 (
                     StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
                     response_headers,
-                    resp_body,
+                    resp_body_bytes,
                 )
                     .into_response()
             }
         }
         Err(_) => {
-            let entry = make_log_entry(&backend_name, &method_str, &path, 502, start);
+            let entry = make_log_entry(
+                &backend_name,
+                start,
+                method_str,
+                path,
+                502,
+                model,
+                TransferType::Json,
+                None,
+            );
             state.write().await.stats.record(entry);
             StatusCode::BAD_GATEWAY.into_response()
         }
@@ -266,5 +397,63 @@ fn reqwest_method(method: &Method) -> reqwest::Method {
         Method::HEAD => reqwest::Method::HEAD,
         Method::OPTIONS => reqwest::Method::OPTIONS,
         _ => reqwest::Method::GET,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_usage_skips_leading_broken_utf8() {
+        // Simulate a tail that starts mid-codepoint (last 2 bytes of a 3-byte char)
+        let mut tail: Vec<u8> = vec![0x80, 0xBF]; // invalid leading bytes
+        tail.extend_from_slice(b"\ndata: {\"usage\":{\"input_tokens\":42,\"output_tokens\":99}}\n");
+        let usage = extract_usage_from_tail(&tail).expect("should parse despite broken prefix");
+        assert_eq!(usage.input_tokens, 42);
+        assert_eq!(usage.output_tokens, 99);
+    }
+
+    #[test]
+    fn extract_usage_skips_partial_frame_finds_valid() {
+        // A recent frame has only output_tokens; an older frame has both.
+        let tail = b"data: {\"usage\":{\"input_tokens\":5,\"output_tokens\":20}}\n\
+                     data: {\"usage\":{\"output_tokens\":30}}\n";
+        let usage =
+            extract_usage_from_tail(tail).expect("should skip partial and find complete frame");
+        assert_eq!(usage.input_tokens, 5);
+        assert_eq!(usage.output_tokens, 20);
+    }
+
+    #[test]
+    fn extract_usage_works_on_clean_tail() {
+        let tail = b"data: {\"usage\":{\"input_tokens\":10,\"output_tokens\":25}}\n";
+        let usage = extract_usage_from_tail(tail).expect("should parse clean tail");
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 25);
+    }
+
+    #[test]
+    fn extract_model_from_top_level() {
+        let body = br#"{"model":"claude-sonnet-4-20250514","stream":true}"#;
+        assert_eq!(
+            extract_model(body).as_deref(),
+            Some("claude-sonnet-4-20250514")
+        );
+    }
+
+    #[test]
+    fn extract_model_from_batch_request() {
+        let body = br#"{"requests":[{"params":{"model":"claude-haiku-4-5-20251001"}}]}"#;
+        assert_eq!(
+            extract_model(body).as_deref(),
+            Some("claude-haiku-4-5-20251001")
+        );
+    }
+
+    #[test]
+    fn extract_model_none_when_absent() {
+        let body = br#"{"stream":true}"#;
+        assert!(extract_model(body).is_none());
     }
 }

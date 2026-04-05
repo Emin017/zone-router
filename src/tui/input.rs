@@ -53,8 +53,23 @@ pub fn handle_input(
                 }
             }
             FocusPanel::RequestLog => {
-                if log_len > 0 {
-                    tui.log_scroll = (tui.log_scroll + 1).min(log_len.saturating_sub(1));
+                let s = rt.block_on(state.read());
+                let len = s.stats.log.len();
+                if len > 0 {
+                    // Resolve current position from stable ID before moving
+                    let current = tui
+                        .log_cursor_id
+                        .and_then(|id| {
+                            s.stats
+                                .log
+                                .iter()
+                                .position(|e| e.id == id)
+                                .map(|di| len.saturating_sub(1) - di)
+                        })
+                        .unwrap_or(tui.log_cursor);
+                    tui.log_cursor = (current + 1).min(len.saturating_sub(1));
+                    let deque_idx = len.saturating_sub(1) - tui.log_cursor;
+                    tui.log_cursor_id = s.stats.log.get(deque_idx).map(|e| e.id);
                 }
             }
         },
@@ -63,7 +78,24 @@ pub fn handle_input(
                 tui.cursor = tui.cursor.saturating_sub(1);
             }
             FocusPanel::RequestLog => {
-                tui.log_scroll = tui.log_scroll.saturating_sub(1);
+                let s = rt.block_on(state.read());
+                let len = s.stats.log.len();
+                if len > 0 {
+                    let current = tui
+                        .log_cursor_id
+                        .and_then(|id| {
+                            s.stats
+                                .log
+                                .iter()
+                                .position(|e| e.id == id)
+                                .map(|di| len.saturating_sub(1) - di)
+                        })
+                        .unwrap_or(tui.log_cursor);
+                    tui.log_cursor = current.saturating_sub(1);
+                    let deque_idx =
+                        len.saturating_sub(1) - tui.log_cursor.min(len.saturating_sub(1));
+                    tui.log_cursor_id = s.stats.log.get(deque_idx).map(|e| e.id);
+                }
             }
         },
         KeyCode::Char('G') => {
@@ -81,6 +113,29 @@ pub fn handle_input(
         KeyCode::Enter => {
             if tui.focus == FocusPanel::Backends {
                 rt.block_on(state.write()).switch_backend(tui.cursor);
+            } else if tui.focus == FocusPanel::RequestLog && log_len > 0 {
+                tui.detail_scroll = 0;
+                // Validate log_cursor_id against current log; fall back to index lookup
+                let s = rt.block_on(state.read());
+                let id_valid = tui
+                    .log_cursor_id
+                    .is_some_and(|id| s.stats.log.iter().any(|e| e.id == id));
+                tui.detail_entry_id = if id_valid {
+                    tui.log_cursor_id
+                } else {
+                    let len = s.stats.log.len();
+                    if len == 0 {
+                        None
+                    } else {
+                        let idx = len.saturating_sub(1) - tui.log_cursor.min(len.saturating_sub(1));
+                        s.stats.log.get(idx).map(|e| e.id)
+                    }
+                };
+                // Sync log_cursor_id so closing the panel preserves the selection
+                // (covers both None and stale-but-Some after log truncation)
+                tui.log_cursor_id = tui.detail_entry_id;
+                drop(s);
+                tui.mode = InputMode::DetailView;
             }
         }
         KeyCode::Char(c @ '1'..='9') => {
@@ -144,10 +199,12 @@ pub fn handle_input_mode(
 ) {
     match key.code {
         KeyCode::Esc => {
+            if tui.mode != InputMode::DetailView {
+                tui.input_buffer.clear();
+                tui.auth_type_rejected = false;
+                tui.model_map_rejected = false;
+            }
             tui.mode = InputMode::Normal;
-            tui.input_buffer.clear();
-            tui.auth_type_rejected = false;
-            tui.model_map_rejected = false;
         }
         KeyCode::Enter => match &tui.mode {
             InputMode::AddName => {
@@ -309,7 +366,7 @@ pub fn handle_input_mode(
             InputMode::ShowToken => {
                 tui.mode = InputMode::Normal;
             }
-            InputMode::Normal => {}
+            InputMode::Normal | InputMode::DetailView => {}
         },
         KeyCode::Backspace => {
             tui.input_buffer.pop();
@@ -351,7 +408,74 @@ pub fn handle_input_mode(
             tui.mode = InputMode::EditModelMap;
         }
         KeyCode::Char(c) => {
-            if tui.mode == InputMode::ShowToken {
+            if tui.mode == InputMode::DetailView {
+                match c {
+                    'j' => {
+                        tui.detail_scroll = tui.detail_scroll.saturating_add(1);
+                    }
+                    'k' => {
+                        tui.detail_scroll = tui.detail_scroll.saturating_sub(1);
+                    }
+                    'n' => {
+                        if let Some(current_id) = tui.detail_entry_id {
+                            let s = rt.block_on(state.read());
+                            let pos = s.stats.log.iter().position(|e| e.id == current_id);
+                            if let Some(idx) = pos {
+                                if idx > 0 {
+                                    let new_id = s.stats.log[idx - 1].id;
+                                    tui.detail_entry_id = Some(new_id);
+                                    tui.log_cursor_id = Some(new_id);
+                                    tui.log_cursor =
+                                        s.stats.log.len().saturating_sub(1) - (idx - 1);
+                                    tui.detail_scroll = 0;
+                                }
+                            } else {
+                                // Entry was evicted — resync to cursor position
+                                let len = s.stats.log.len();
+                                if len > 0 {
+                                    let di = len.saturating_sub(1)
+                                        - tui.log_cursor.min(len.saturating_sub(1));
+                                    if let Some(e) = s.stats.log.get(di) {
+                                        tui.detail_entry_id = Some(e.id);
+                                        tui.log_cursor_id = Some(e.id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    'p' => {
+                        if let Some(current_id) = tui.detail_entry_id {
+                            let s = rt.block_on(state.read());
+                            let pos = s.stats.log.iter().position(|e| e.id == current_id);
+                            if let Some(idx) = pos {
+                                if idx + 1 < s.stats.log.len() {
+                                    let new_id = s.stats.log[idx + 1].id;
+                                    tui.detail_entry_id = Some(new_id);
+                                    tui.log_cursor_id = Some(new_id);
+                                    tui.log_cursor =
+                                        s.stats.log.len().saturating_sub(1) - (idx + 1);
+                                    tui.detail_scroll = 0;
+                                }
+                            } else {
+                                // Entry was evicted — resync to cursor position
+                                let len = s.stats.log.len();
+                                if len > 0 {
+                                    let di = len.saturating_sub(1)
+                                        - tui.log_cursor.min(len.saturating_sub(1));
+                                    if let Some(e) = s.stats.log.get(di) {
+                                        tui.detail_entry_id = Some(e.id);
+                                        tui.log_cursor_id = Some(e.id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    'h' => {
+                        tui.mode = InputMode::Normal;
+                    }
+                    _ => {}
+                }
+            } else if tui.mode == InputMode::ShowToken {
                 tui.mode = InputMode::Normal;
             } else {
                 tui.input_buffer.push(c);

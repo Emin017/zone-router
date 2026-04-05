@@ -58,14 +58,24 @@ impl ModelMap {
         self.haiku.is_some() || self.sonnet.is_some() || self.opus.is_some()
     }
 
-    /// Given a model name, return the replacement if a tier matches.
+    /// Given a model name, return the replacement if it matches a Claude tier.
+    /// Matches `claude-*-opus-*`, `claude-*-sonnet-*`, `claude-*-haiku-*` patterns
+    /// to avoid false positives on unrelated model names.
     pub fn resolve(&self, model: &str) -> Option<&str> {
         let lower = model.to_ascii_lowercase();
-        if lower.contains("opus") {
+        if !lower.starts_with("claude-") {
+            return None;
+        }
+        // Match tier tokens at word boundaries: "-opus-" or trailing "-opus"
+        let has_tier = |tier: &str| {
+            let pattern = format!("-{tier}-");
+            lower.contains(&pattern) || lower.ends_with(&format!("-{tier}"))
+        };
+        if has_tier("opus") {
             self.opus.as_deref()
-        } else if lower.contains("sonnet") {
+        } else if has_tier("sonnet") {
             self.sonnet.as_deref()
-        } else if lower.contains("haiku") {
+        } else if has_tier("haiku") {
             self.haiku.as_deref()
         } else {
             None
