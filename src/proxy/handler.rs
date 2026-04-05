@@ -106,7 +106,14 @@ impl<S> Drop for SseTailStream<S> {
 }
 
 fn extract_usage_from_tail(tail: &[u8]) -> Option<TokenUsage> {
-    let text = std::str::from_utf8(tail).ok()?;
+    // Truncation can split a leading multibyte char, leaving up to 3
+    // orphan continuation bytes (0x80..=0xBF). Skip them so from_utf8
+    // doesn't reject the entire buffer.
+    let start = tail
+        .iter()
+        .position(|&b| b & 0b1100_0000 != 0b1000_0000)
+        .unwrap_or(tail.len());
+    let text = std::str::from_utf8(tail.get(start..)?).ok()?;
     for line in text.lines().rev() {
         let payload = match line
             .strip_prefix("data: ")
@@ -370,5 +377,28 @@ fn reqwest_method(method: &Method) -> reqwest::Method {
         Method::HEAD => reqwest::Method::HEAD,
         Method::OPTIONS => reqwest::Method::OPTIONS,
         _ => reqwest::Method::GET,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_usage_skips_leading_broken_utf8() {
+        // Simulate a tail that starts mid-codepoint (last 2 bytes of a 3-byte char)
+        let mut tail: Vec<u8> = vec![0x80, 0xBF]; // invalid leading bytes
+        tail.extend_from_slice(b"\ndata: {\"usage\":{\"input_tokens\":42,\"output_tokens\":99}}\n");
+        let usage = extract_usage_from_tail(&tail).expect("should parse despite broken prefix");
+        assert_eq!(usage.input_tokens, 42);
+        assert_eq!(usage.output_tokens, 99);
+    }
+
+    #[test]
+    fn extract_usage_works_on_clean_tail() {
+        let tail = b"data: {\"usage\":{\"input_tokens\":10,\"output_tokens\":25}}\n";
+        let usage = extract_usage_from_tail(tail).expect("should parse clean tail");
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 25);
     }
 }
