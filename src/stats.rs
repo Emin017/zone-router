@@ -75,6 +75,8 @@ pub struct BackendStats {
     pub success_count: u64,
     pub error_count: u64,
     pub total_latency_ms: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
 }
 
 impl BackendStats {
@@ -86,13 +88,17 @@ impl BackendStats {
         }
     }
 
-    pub fn record(&mut self, status: u16, latency_ms: u64) {
+    pub fn record(&mut self, status: u16, latency_ms: u64, usage: Option<TokenUsage>) {
         self.total_requests += 1;
         self.total_latency_ms += latency_ms;
         if (200..400).contains(&status) {
             self.success_count += 1;
         } else {
             self.error_count += 1;
+        }
+        if let Some(u) = usage {
+            self.total_input_tokens += u.input_tokens;
+            self.total_output_tokens += u.output_tokens;
         }
     }
 }
@@ -117,7 +123,7 @@ impl StatsCollector {
         self.per_backend
             .entry(entry.backend.clone())
             .or_default()
-            .record(entry.status, entry.latency_ms);
+            .record(entry.status, entry.latency_ms, entry.usage);
         if self.log.len() >= MAX_LOG_ENTRIES {
             self.log.pop_front();
         }
@@ -132,8 +138,8 @@ mod tests {
     #[test]
     fn backend_stats_avg_latency() {
         let mut stats = BackendStats::default();
-        stats.record(200, 100);
-        stats.record(200, 300);
+        stats.record(200, 100, None);
+        stats.record(200, 300, None);
         assert_eq!(stats.avg_latency_ms(), 200.0);
         assert_eq!(stats.success_count, 2);
         assert_eq!(stats.error_count, 0);
@@ -142,11 +148,35 @@ mod tests {
     #[test]
     fn backend_stats_error_counting() {
         let mut stats = BackendStats::default();
-        stats.record(200, 100);
-        stats.record(500, 50);
-        stats.record(401, 30);
+        stats.record(200, 100, None);
+        stats.record(500, 50, None);
+        stats.record(401, 30, None);
         assert_eq!(stats.success_count, 1);
         assert_eq!(stats.error_count, 2);
+    }
+
+    #[test]
+    fn backend_stats_accumulates_tokens() {
+        let mut stats = BackendStats::default();
+        stats.record(
+            200,
+            100,
+            Some(TokenUsage {
+                input_tokens: 50,
+                output_tokens: 20,
+            }),
+        );
+        stats.record(200, 200, None);
+        stats.record(
+            200,
+            150,
+            Some(TokenUsage {
+                input_tokens: 30,
+                output_tokens: 10,
+            }),
+        );
+        assert_eq!(stats.total_input_tokens, 80);
+        assert_eq!(stats.total_output_tokens, 30);
     }
 
     #[test]
