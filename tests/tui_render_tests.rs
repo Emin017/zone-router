@@ -42,8 +42,8 @@ fn render_to_string(
     width: u16,
     height: u16,
 ) -> String {
-    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
 
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -202,8 +202,8 @@ fn render_help_bar_restores_normal_keys_after_close() {
 
 #[test]
 fn render_popup_geometry_is_centered_in_log_area() {
-    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
 
     let dir = tempfile::tempdir().unwrap();
     let state_arc = make_app_state_with_log(&dir);
@@ -276,9 +276,9 @@ fn render_popup_geometry_is_centered_in_log_area() {
 
 #[test]
 fn render_popup_exact_centered_geometry() {
-    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::{Constraint, Direction, Layout};
+    use ratatui::Terminal;
 
     let dir = tempfile::tempdir().unwrap();
     let state_arc = make_app_state_with_log(&dir);
@@ -374,8 +374,8 @@ fn render_popup_exact_centered_geometry() {
 
 #[test]
 fn render_log_auto_scroll_and_highlight() {
-    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
 
     let dir = tempfile::tempdir().unwrap();
     let config = zone_router::config::Config {

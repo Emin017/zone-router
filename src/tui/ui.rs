@@ -1,10 +1,10 @@
 use crate::state::AppState;
 use crate::stats::RequestLogEntry;
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::Frame;
 use tracing::Level;
 
 use super::app::{FocusPanel, InputMode, TuiState};

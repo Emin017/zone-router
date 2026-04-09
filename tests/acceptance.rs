@@ -1,8 +1,8 @@
-use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::routing::post;
+use axum::Router;
 use futures_util::stream;
 use std::sync::Arc;
 use std::time::Duration;

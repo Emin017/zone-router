@@ -1,8 +1,8 @@
-use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::routing::post;
+use axum::Router;
 use futures_util::stream;
 use tower::ServiceExt;
 
@@ -173,11 +173,9 @@ async fn headers_pass_through() {
     let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
         .await
         .unwrap();
-    assert!(
-        String::from_utf8(body.to_vec())
-            .unwrap()
-            .contains("version=2024-01-01")
-    );
+    assert!(String::from_utf8(body.to_vec())
+        .unwrap()
+        .contains("version=2024-01-01"));
 }
 
 #[tokio::test]
