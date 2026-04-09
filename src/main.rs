@@ -82,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    info!(addr = %listen_addr, "server started");
+    zone_router::logging::log_server_started(&listen_addr);
     info!("local token generated");
 
     let tui_state = state.clone();

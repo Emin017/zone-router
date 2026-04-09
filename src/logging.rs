@@ -81,6 +81,11 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for TuiLogLayer {
     }
 }
 
+/// Emit the startup info log with the bound listen address.
+pub fn log_server_started(addr: &str) {
+    tracing::info!(addr = %addr, "server started");
+}
+
 /// Initialise the global tracing subscriber with a file layer and a TUI channel layer.
 ///
 /// Returns the log receiver for the TUI and a guard that must be held for the

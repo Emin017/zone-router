@@ -77,7 +77,6 @@ async fn auth_failure_logs_warning() {
     );
     let router = zone_router::proxy::server::build_router(state);
 
-    // Send request with wrong token — should trigger auth failure log
     let req = Request::builder()
         .uri("/v1/messages")
         .header("x-api-key", "wrong-token")
@@ -92,6 +91,10 @@ async fn auth_failure_logs_warning() {
         output.contains("auth failed"),
         "auth failure should be logged. Got: {output}"
     );
+    assert!(
+        output.contains("WARN"),
+        "auth failure should be at WARN level. Got: {output}"
+    );
 }
 
 #[tokio::test]
@@ -100,7 +103,6 @@ async fn backend_request_failure_logs_error() {
     let subscriber = make_capture_subscriber(writer.clone());
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    // Backend points to unreachable address
     let state = common::make_state(
         vec![("failing-be", "http://127.0.0.1:1", "be-tok")],
         "local-tok",
@@ -123,8 +125,16 @@ async fn backend_request_failure_logs_error() {
         "backend failure should be logged. Got: {output}"
     );
     assert!(
+        output.contains("ERROR"),
+        "backend failure should be at ERROR level. Got: {output}"
+    );
+    assert!(
         output.contains("failing-be"),
         "backend name should appear in error log. Got: {output}"
+    );
+    assert!(
+        output.contains("127.0.0.1:1"),
+        "backend URL should appear in error log. Got: {output}"
     );
 }
 
@@ -179,6 +189,14 @@ fn config_change_logs_info() {
         "backend switch should be logged. Got: {output}"
     );
     assert!(
+        output.contains("INFO"),
+        "backend switch should be at INFO level. Got: {output}"
+    );
+    assert!(
+        output.contains("be-a") && output.contains("be-b"),
+        "backend switch should include from/to names. Got: {output}"
+    );
+    assert!(
         output.contains("backend added"),
         "backend add should be logged. Got: {output}"
     );
@@ -204,15 +222,12 @@ async fn tokens_never_appear_in_logs() {
     );
     let router = zone_router::proxy::server::build_router(state.clone());
 
-    // Drive several flows that might log
-    // 1. Auth failure (wrong token)
     let req1 = Request::builder()
         .uri("/v1/messages")
         .header("x-api-key", "wrong")
         .body(Body::empty())
         .unwrap();
 
-    // 2. Successful auth but backend fails
     let req2 = Request::builder()
         .uri("/v1/messages")
         .header("x-api-key", local_token)
@@ -225,7 +240,6 @@ async fn tokens_never_appear_in_logs() {
     let _ = router.oneshot(req1).await;
     let _ = router2.oneshot(req2).await;
 
-    // 3. Config mutation
     {
         let mut s = state.write().await;
         s.switch_backend(0);
@@ -261,7 +275,6 @@ async fn tokens_never_appear_in_logs() {
 async fn model_rewrite_logs_debug() {
     use axum::routing::post;
 
-    // Start a mock backend that echoes the body
     let echo_app =
         axum::Router::new().route("/v1/messages", post(|body: String| async move { body }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -271,7 +284,6 @@ async fn model_rewrite_logs_debug() {
     });
     let backend_url = format!("http://{addr}");
 
-    // Build state with a model map that rewrites sonnet
     let mm = zone_router::config::ModelMap {
         haiku: None,
         sonnet: Some("custom-model-v1".into()),
@@ -319,6 +331,18 @@ async fn model_rewrite_logs_debug() {
         output.contains("model rewritten"),
         "model rewrite should emit debug log. Got: {output}"
     );
+    assert!(
+        output.contains("DEBUG"),
+        "model rewrite should be at DEBUG level. Got: {output}"
+    );
+    assert!(
+        output.contains("claude-sonnet-4-20250514"),
+        "model rewrite log should include original model. Got: {output}"
+    );
+    assert!(
+        output.contains("custom-model-v1"),
+        "model rewrite log should include rewritten model. Got: {output}"
+    );
 }
 
 #[tokio::test]
@@ -329,10 +353,8 @@ async fn shutdown_logs_info() {
 
     let state = common::make_state(vec![("sd-be", "http://127.0.0.1:1", "tok")], "sd-tok");
 
-    // Spawn a dummy server task that immediately completes
     let mut handle = tokio::spawn(async {});
 
-    // force_shutdown sets shutdown=true, logs "shutting down", then waits
     zone_router::proxy::server::force_shutdown(state, &mut handle).await;
     drop(_guard);
 
@@ -340,6 +362,10 @@ async fn shutdown_logs_info() {
     assert!(
         output.contains("shutting down"),
         "shutdown should emit info log. Got: {output}"
+    );
+    assert!(
+        output.contains("INFO"),
+        "shutdown should be at INFO level. Got: {output}"
     );
 }
 
@@ -349,16 +375,18 @@ async fn startup_logs_info() {
     let subscriber = make_capture_subscriber(writer.clone());
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    // The "server started" log is emitted by main.rs using tracing::info!.
-    // Since main.rs is not testable directly, verify the tracing macro works
-    // by emitting the same event and checking capture.
-    tracing::info!(target: "zone_router", addr = %"127.0.0.1:8080", "server started");
+    // Call the production helper extracted from main.rs
+    zone_router::logging::log_server_started("127.0.0.1:8080");
     drop(_guard);
 
     let output = writer.contents();
     assert!(
         output.contains("server started"),
         "startup should emit info log. Got: {output}"
+    );
+    assert!(
+        output.contains("INFO"),
+        "startup should be at INFO level. Got: {output}"
     );
     assert!(
         output.contains("127.0.0.1:8080"),
