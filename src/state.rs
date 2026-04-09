@@ -102,6 +102,7 @@ impl AppState {
         model_map: Option<ModelMap>,
     ) -> bool {
         if let Some(b) = self.config.backends.get_mut(index) {
+            info!(name = %name, "backend updated");
             b.name = name;
             b.url = url;
             b.token = token;

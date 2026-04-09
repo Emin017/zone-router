@@ -355,7 +355,7 @@ fn level_color(level: &Level) -> Color {
         Level::ERROR => Color::Red,
         Level::WARN => Color::Yellow,
         Level::INFO => Color::Green,
-        _ => Color::DarkGray,
+        Level::DEBUG | Level::TRACE => Color::DarkGray,
     }
 }
 
@@ -374,10 +374,10 @@ fn draw_internal_log(frame: &mut Frame, tui: &TuiState, area: Rect) {
             .map(|entry| {
                 Line::from(vec![
                     Span::styled(
-                        format!(" \u{25b6} Logs ({}) ", tui.internal_log_unread),
+                        format!(" ▶ Logs ({}) ", tui.internal_log_unread),
                         Style::default().fg(Color::DarkGray),
                     ),
-                    Span::raw("\u{2502} "),
+                    Span::raw("│ "),
                     Span::styled(
                         format!("[{}]", entry.level),
                         Style::default().fg(level_color(&entry.level)),
@@ -391,7 +391,7 @@ fn draw_internal_log(frame: &mut Frame, tui: &TuiState, area: Rect) {
             })
             .unwrap_or_else(|| {
                 Line::from(Span::styled(
-                    " \u{25b6} Logs (0)",
+                    " ▶ Logs (0)",
                     Style::default().fg(Color::DarkGray),
                 ))
             });
