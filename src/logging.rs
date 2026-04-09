@@ -189,10 +189,8 @@ mod tests {
     #[test]
     fn default_tui_filter_suppresses_debug() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let filter = std::env::var("RUST_LOG")
-            .ok()
-            .and_then(|v| EnvFilter::try_new(v).ok())
-            .unwrap_or_else(|| EnvFilter::new("zone_router=info"));
+        // Construct the default filter directly — no ambient RUST_LOG involved.
+        let filter = EnvFilter::new("zone_router=info");
         let layer = TuiLogLayer::new(tx).with_filter(filter);
 
         let subscriber = tracing_subscriber::registry().with(layer);
@@ -211,10 +209,8 @@ mod tests {
     #[test]
     fn non_zone_router_target_suppressed_by_default() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let filter = std::env::var("RUST_LOG")
-            .ok()
-            .and_then(|v| EnvFilter::try_new(v).ok())
-            .unwrap_or_else(|| EnvFilter::new("zone_router=info"));
+        // Construct the default filter directly — no ambient RUST_LOG involved.
+        let filter = EnvFilter::new("zone_router=info");
         let layer = TuiLogLayer::new(tx).with_filter(filter);
 
         let subscriber = tracing_subscriber::registry().with(layer);
@@ -227,5 +223,171 @@ mod tests {
         let entry = rx.try_recv().expect("should receive zone_router entry");
         assert_eq!(entry.target, "zone_router::test");
         assert!(rx.try_recv().is_err(), "no more entries expected");
+    }
+
+    #[test]
+    fn override_filter_includes_external_targets() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // Simulate RUST_LOG=info — override includes all targets at info level.
+        let filter = EnvFilter::new("info");
+        let layer = TuiLogLayer::new(tx).with_filter(filter);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "hyper::server", "hyper event");
+            tracing::info!(target: "zone_router::test", "zone_router event");
+        });
+
+        // Both events should arrive when override is active.
+        let e1 = rx.try_recv().expect("should receive first entry");
+        let e2 = rx.try_recv().expect("should receive second entry");
+        assert_eq!(e1.target, "hyper::server");
+        assert_eq!(e2.target, "zone_router::test");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn file_layer_creates_log_file_and_flushes_on_guard_drop() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file_appender = tracing_appender::rolling::daily(dir.path(), "test-zone-router.log");
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+        let file_layer = {
+            use tracing_subscriber::fmt;
+            fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false)
+                .with_filter(EnvFilter::new("zone_router=debug"))
+        };
+
+        let subscriber = tracing_subscriber::registry().with(file_layer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "zone_router::test", "file test message");
+            tracing::debug!(target: "zone_router::test", "debug also written");
+        });
+
+        // Drop the guard to flush the non-blocking writer.
+        drop(guard);
+
+        // Verify a log file was created in the temp directory.
+        let entries: Vec<_> = fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(!entries.is_empty(), "at least one log file should exist");
+
+        // Verify file content contains our messages.
+        let content = fs::read_to_string(entries[0].path()).expect("read log file");
+        assert!(
+            content.contains("file test message"),
+            "info message in file"
+        );
+        assert!(
+            content.contains("debug also written"),
+            "debug message in file"
+        );
+    }
+
+    #[test]
+    fn file_default_filter_keeps_debug_excludes_trace() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file_appender = tracing_appender::rolling::daily(dir.path(), "test-filter.log");
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+        let file_layer = {
+            use tracing_subscriber::fmt;
+            fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false)
+                .with_filter(EnvFilter::new("zone_router=debug"))
+        };
+
+        let subscriber = tracing_subscriber::registry().with(file_layer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::trace!(target: "zone_router::test", "trace msg");
+            tracing::debug!(target: "zone_router::test", "debug msg");
+        });
+
+        drop(guard);
+
+        let log_path = fs::read_dir(dir.path())
+            .expect("read dir")
+            .find_map(|e| e.ok())
+            .expect("log file")
+            .path();
+        let content = fs::read_to_string(&log_path).expect("read");
+
+        assert!(
+            content.contains("debug msg"),
+            "DEBUG should be kept at zone_router=debug"
+        );
+        assert!(
+            !content.contains("trace msg"),
+            "TRACE should be excluded at zone_router=debug"
+        );
+    }
+
+    #[test]
+    fn file_default_filter_excludes_non_zone_router() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file_appender = tracing_appender::rolling::daily(dir.path(), "test-target.log");
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+        let file_layer = {
+            use tracing_subscriber::fmt;
+            fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false)
+                .with_filter(EnvFilter::new("zone_router=debug"))
+        };
+
+        let subscriber = tracing_subscriber::registry().with(file_layer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "hyper::server", "hyper log");
+            tracing::info!(target: "zone_router::test", "zone_router log");
+        });
+
+        drop(guard);
+
+        let log_path = fs::read_dir(dir.path())
+            .expect("read dir")
+            .find_map(|e| e.ok())
+            .expect("log file")
+            .path();
+        let content = fs::read_to_string(&log_path).expect("read");
+
+        assert!(
+            content.contains("zone_router log"),
+            "zone_router target should be included"
+        );
+        assert!(
+            !content.contains("hyper log"),
+            "hyper target should be excluded by default"
+        );
+    }
+
+    #[test]
+    fn second_global_subscriber_is_rejected() {
+        // Set a global subscriber, then verify a second set_global_default call
+        // returns Err — this is the mechanism that prevents double-init panics
+        // when init_tracing() uses .init() (which calls set_global_default).
+        use tracing_subscriber::prelude::*;
+
+        let first = tracing_subscriber::registry();
+        // Use try_init to avoid panicking — it returns Err if already set.
+        let result = first.try_init();
+        // First call should succeed.
+        assert!(result.is_ok(), "first global subscriber should be accepted");
+
+        let second = tracing_subscriber::registry();
+        let result = second.try_init();
+        // Second call must fail — this proves the double-init guard works.
+        assert!(result.is_err(), "second global subscriber must be rejected");
     }
 }
