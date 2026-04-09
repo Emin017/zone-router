@@ -450,7 +450,7 @@ mod tests {
             .path();
 
         let filename = log_path.file_name().unwrap().to_string_lossy();
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         assert!(
             filename.starts_with(prefix) && filename.contains(&today),
             "daily rolling filename should be '{prefix}.{today}', got '{filename}'"
