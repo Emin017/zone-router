@@ -113,6 +113,18 @@ pub fn log_server_started(addr: &str) {
     tracing::info!(addr = %addr, "server started");
 }
 
+/// Probe whether `log_dir` can be created and written to.
+/// Returns `true` only if both `create_dir_all` and a temp file write succeed.
+fn is_writable_dir(log_dir: &std::path::Path) -> bool {
+    if std::fs::create_dir_all(log_dir).is_err() {
+        return false;
+    }
+    let probe = log_dir.join(".zone-router-write-probe");
+    let ok = std::fs::File::create(&probe).is_ok();
+    let _ = std::fs::remove_file(&probe);
+    ok
+}
+
 /// Initialise the global tracing subscriber with a file layer and a TUI channel layer.
 ///
 /// Returns the log receiver for the TUI and a guard that must be held for the
@@ -137,35 +149,15 @@ pub fn init_tracing() -> (
 
     // File layer — daily rolling under XDG state dir.
     // Gracefully skip the file layer if the log directory cannot be created
-    // or is not writable (e.g. containers, restricted service accounts, or
-    // an existing read-only directory, or no home directory at all).
-    let log_dir_opt = dirs::state_dir()
+    // or is not writable (e.g. containers, restricted service accounts).
+    let writable_log_dir = dirs::state_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))
-        .map(|base| base.join("zone-router/logs"));
-    // Always create a sink-backed NonBlocking so the guard type is uniform.
-    let (sink_nb, sink_guard) = tracing_appender::non_blocking(std::io::sink());
-    // Probe writability: create the directory, then try writing a temp file.
-    // Both steps must succeed before we hand the path to rolling::daily,
-    // which panics rather than returning an error on open failure.
-    let writable_log_dir = log_dir_opt.as_deref().and_then(|log_dir| {
-        if std::fs::create_dir_all(log_dir).is_ok() {
-            let probe = log_dir.join(".zone-router-write-probe");
-            let ok = std::fs::File::create(&probe).is_ok();
-            let _ = std::fs::remove_file(&probe);
-            if ok {
-                Some(log_dir)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    });
+        .map(|base| base.join("zone-router/logs"))
+        .filter(|dir| is_writable_dir(dir));
+
     let (file_layer, guard) = if let Some(log_dir) = writable_log_dir {
         let file_appender = tracing_appender::rolling::daily(log_dir, "zone-router.log");
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-        drop(sink_nb);
-        drop(sink_guard);
         let file_filter = make_filter("zone_router=debug");
         let layer = fmt::layer()
             .with_writer(non_blocking)
@@ -174,7 +166,8 @@ pub fn init_tracing() -> (
         (Some(layer), guard)
     } else {
         // Log dir unavailable — TUI layer still works, file layer skipped.
-        drop(sink_nb);
+        // A sink guard keeps the return type uniform.
+        let (_sink_nb, sink_guard) = tracing_appender::non_blocking(std::io::sink());
         (None, sink_guard)
     };
 

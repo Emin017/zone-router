@@ -139,17 +139,34 @@ impl TuiState {
         }
         // Keep the display index in sync with the stable entry id so that
         // new arrivals don't shift the selection.
-        let len = self.internal_log.len();
         if let Some(id) = self.internal_log_cursor_id {
             if let Some(pos) = self.internal_log.iter().position(|e| e.id == id) {
-                // pos is deque index (oldest=0); convert to display index (newest=0)
-                let display = len.saturating_sub(1) - pos;
+                let display = self.internal_log.len().saturating_sub(1) - pos;
                 self.internal_log_cursor = display;
             } else {
-                // Entry was evicted — reset to top (newest)
                 self.internal_log_cursor = 0;
                 self.internal_log_cursor_id = None;
             }
+        }
+    }
+
+    /// Move the internal log cursor forward (toward older entries) by one.
+    pub fn internal_log_cursor_down(&mut self) {
+        let len = self.internal_log.len();
+        if len > 0 {
+            self.internal_log_cursor = (self.internal_log_cursor + 1).min(len.saturating_sub(1));
+            let deque_idx = len.saturating_sub(1) - self.internal_log_cursor;
+            self.internal_log_cursor_id = self.internal_log.get(deque_idx).map(|e| e.id);
+        }
+    }
+
+    /// Move the internal log cursor backward (toward newer entries) by one.
+    pub fn internal_log_cursor_up(&mut self) {
+        let len = self.internal_log.len();
+        if len > 0 {
+            self.internal_log_cursor = self.internal_log_cursor.saturating_sub(1);
+            let deque_idx = len.saturating_sub(1) - self.internal_log_cursor;
+            self.internal_log_cursor_id = self.internal_log.get(deque_idx).map(|e| e.id);
         }
     }
 }

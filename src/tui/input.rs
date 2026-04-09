@@ -28,6 +28,41 @@ fn resolve_model_map(input: &str, rejected: bool) -> Option<Option<ModelMap>> {
     }
 }
 
+/// Navigate the detail view to an adjacent log entry.
+/// `offset` is the deque index delta: -1 for next (newer), +1 for previous (older).
+fn navigate_detail(
+    tui: &mut TuiState,
+    state: &Arc<RwLock<AppState>>,
+    rt: &tokio::runtime::Handle,
+    offset: isize,
+) {
+    let Some(current_id) = tui.detail_entry_id else {
+        return;
+    };
+    let s = rt.block_on(state.read());
+    let Some(idx) = s.stats.log.iter().position(|e| e.id == current_id) else {
+        // Entry was evicted — resync to cursor position
+        let len = s.stats.log.len();
+        if len > 0 {
+            let di = len.saturating_sub(1) - tui.log_cursor.min(len.saturating_sub(1));
+            if let Some(e) = s.stats.log.get(di) {
+                tui.detail_entry_id = Some(e.id);
+                tui.log_cursor_id = Some(e.id);
+            }
+        }
+        return;
+    };
+    let new_idx = idx as isize + offset;
+    if new_idx >= 0 && (new_idx as usize) < s.stats.log.len() {
+        let new_idx = new_idx as usize;
+        let new_id = s.stats.log[new_idx].id;
+        tui.detail_entry_id = Some(new_id);
+        tui.log_cursor_id = Some(new_id);
+        tui.log_cursor = s.stats.log.len().saturating_sub(1) - new_idx;
+        tui.detail_scroll = 0;
+    }
+}
+
 /// Returns true if the TUI should exit.
 pub fn handle_input(
     key: KeyEvent,
@@ -46,7 +81,7 @@ pub fn handle_input(
 
     match key.code {
         KeyCode::Char('q') => return true,
-        KeyCode::Char('j') => match tui.focus {
+        KeyCode::Char('j') | KeyCode::Down => match tui.focus {
             FocusPanel::Backends => {
                 if backend_count > 0 {
                     tui.cursor = (tui.cursor + 1).min(backend_count - 1);
@@ -71,17 +106,9 @@ pub fn handle_input(
                     tui.log_cursor_id = s.stats.log.get(deque_idx).map(|e| e.id);
                 }
             }
-            FocusPanel::InternalLog => {
-                let len = tui.internal_log.len();
-                if len > 0 {
-                    tui.internal_log_cursor =
-                        (tui.internal_log_cursor + 1).min(len.saturating_sub(1));
-                    let deque_idx = len.saturating_sub(1) - tui.internal_log_cursor;
-                    tui.internal_log_cursor_id = tui.internal_log.get(deque_idx).map(|e| e.id);
-                }
-            }
+            FocusPanel::InternalLog => tui.internal_log_cursor_down(),
         },
-        KeyCode::Char('k') => match tui.focus {
+        KeyCode::Char('k') | KeyCode::Up => match tui.focus {
             FocusPanel::Backends => {
                 tui.cursor = tui.cursor.saturating_sub(1);
             }
@@ -105,39 +132,11 @@ pub fn handle_input(
                     tui.log_cursor_id = s.stats.log.get(deque_idx).map(|e| e.id);
                 }
             }
-            FocusPanel::InternalLog => {
-                let len = tui.internal_log.len();
-                if len > 0 {
-                    tui.internal_log_cursor = tui.internal_log_cursor.saturating_sub(1);
-                    let deque_idx = len.saturating_sub(1) - tui.internal_log_cursor;
-                    tui.internal_log_cursor_id = tui.internal_log.get(deque_idx).map(|e| e.id);
-                }
-            }
+            FocusPanel::InternalLog => tui.internal_log_cursor_up(),
         },
         KeyCode::Char('G') => {
             if tui.focus == FocusPanel::Backends && backend_count > 0 {
                 tui.cursor = backend_count - 1;
-            }
-        }
-        KeyCode::Down => {
-            if tui.focus == FocusPanel::InternalLog {
-                let len = tui.internal_log.len();
-                if len > 0 {
-                    tui.internal_log_cursor =
-                        (tui.internal_log_cursor + 1).min(len.saturating_sub(1));
-                    let deque_idx = len.saturating_sub(1) - tui.internal_log_cursor;
-                    tui.internal_log_cursor_id = tui.internal_log.get(deque_idx).map(|e| e.id);
-                }
-            }
-        }
-        KeyCode::Up => {
-            if tui.focus == FocusPanel::InternalLog {
-                let len = tui.internal_log.len();
-                if len > 0 {
-                    tui.internal_log_cursor = tui.internal_log_cursor.saturating_sub(1);
-                    let deque_idx = len.saturating_sub(1) - tui.internal_log_cursor;
-                    tui.internal_log_cursor_id = tui.internal_log.get(deque_idx).map(|e| e.id);
-                }
             }
         }
         KeyCode::Char('g') => {
@@ -462,60 +461,8 @@ pub fn handle_input_mode(
                     'k' => {
                         tui.detail_scroll = tui.detail_scroll.saturating_sub(1);
                     }
-                    'n' => {
-                        if let Some(current_id) = tui.detail_entry_id {
-                            let s = rt.block_on(state.read());
-                            let pos = s.stats.log.iter().position(|e| e.id == current_id);
-                            if let Some(idx) = pos {
-                                if idx > 0 {
-                                    let new_id = s.stats.log[idx - 1].id;
-                                    tui.detail_entry_id = Some(new_id);
-                                    tui.log_cursor_id = Some(new_id);
-                                    tui.log_cursor =
-                                        s.stats.log.len().saturating_sub(1) - (idx - 1);
-                                    tui.detail_scroll = 0;
-                                }
-                            } else {
-                                // Entry was evicted — resync to cursor position
-                                let len = s.stats.log.len();
-                                if len > 0 {
-                                    let di = len.saturating_sub(1)
-                                        - tui.log_cursor.min(len.saturating_sub(1));
-                                    if let Some(e) = s.stats.log.get(di) {
-                                        tui.detail_entry_id = Some(e.id);
-                                        tui.log_cursor_id = Some(e.id);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    'p' => {
-                        if let Some(current_id) = tui.detail_entry_id {
-                            let s = rt.block_on(state.read());
-                            let pos = s.stats.log.iter().position(|e| e.id == current_id);
-                            if let Some(idx) = pos {
-                                if idx + 1 < s.stats.log.len() {
-                                    let new_id = s.stats.log[idx + 1].id;
-                                    tui.detail_entry_id = Some(new_id);
-                                    tui.log_cursor_id = Some(new_id);
-                                    tui.log_cursor =
-                                        s.stats.log.len().saturating_sub(1) - (idx + 1);
-                                    tui.detail_scroll = 0;
-                                }
-                            } else {
-                                // Entry was evicted — resync to cursor position
-                                let len = s.stats.log.len();
-                                if len > 0 {
-                                    let di = len.saturating_sub(1)
-                                        - tui.log_cursor.min(len.saturating_sub(1));
-                                    if let Some(e) = s.stats.log.get(di) {
-                                        tui.detail_entry_id = Some(e.id);
-                                        tui.log_cursor_id = Some(e.id);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    'n' => navigate_detail(tui, state, rt, -1),
+                    'p' => navigate_detail(tui, state, rt, 1),
                     'h' => {
                         tui.mode = InputMode::Normal;
                     }
