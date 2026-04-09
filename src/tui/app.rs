@@ -126,9 +126,7 @@ impl TuiState {
             self.internal_log.push_back(entry);
             if self.internal_log.len() > INTERNAL_LOG_CAP {
                 self.internal_log.pop_front();
-                if self.internal_log_cursor > 0 {
-                    self.internal_log_cursor -= 1;
-                }
+                self.internal_log_cursor = self.internal_log_cursor.saturating_sub(1);
             }
             self.internal_log_unread += 1;
         }
