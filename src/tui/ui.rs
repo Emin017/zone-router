@@ -403,7 +403,17 @@ fn draw_internal_log(frame: &mut Frame, tui: &TuiState, area: Rect) {
     // Expanded: scrollable list with border
     let visible_height = area.height.saturating_sub(2) as usize;
     let log_len = tui.internal_log.len();
-    let log_cursor = tui.internal_log_cursor.min(log_len.saturating_sub(1));
+    // Resolve cursor from the stable entry id so new arrivals don't shift selection.
+    let log_cursor = tui
+        .internal_log_cursor_id
+        .and_then(|id| {
+            tui.internal_log
+                .iter()
+                .position(|e| e.id == id)
+                .map(|deque_idx| log_len.saturating_sub(1) - deque_idx)
+        })
+        .unwrap_or(tui.internal_log_cursor)
+        .min(log_len.saturating_sub(1));
 
     let scroll = if log_cursor >= visible_height {
         log_cursor - visible_height + 1

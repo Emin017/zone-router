@@ -83,6 +83,7 @@ pub struct TuiState {
     pub internal_log: VecDeque<LogEntry>,
     pub internal_log_rx: mpsc::UnboundedReceiver<LogEntry>,
     pub internal_log_cursor: usize,
+    pub internal_log_cursor_id: Option<u64>,
     pub internal_log_unread: usize,
 }
 
@@ -116,6 +117,7 @@ impl TuiState {
             internal_log: VecDeque::new(),
             internal_log_rx: log_rx,
             internal_log_cursor: 0,
+            internal_log_cursor_id: None,
             internal_log_unread: 0,
         }
     }
@@ -133,6 +135,20 @@ impl TuiState {
             }
             if track_unread {
                 self.internal_log_unread += 1;
+            }
+        }
+        // Keep the display index in sync with the stable entry id so that
+        // new arrivals don't shift the selection.
+        let len = self.internal_log.len();
+        if let Some(id) = self.internal_log_cursor_id {
+            if let Some(pos) = self.internal_log.iter().position(|e| e.id == id) {
+                // pos is deque index (oldest=0); convert to display index (newest=0)
+                let display = len.saturating_sub(1) - pos;
+                self.internal_log_cursor = display;
+            } else {
+                // Entry was evicted — reset to top (newest)
+                self.internal_log_cursor = 0;
+                self.internal_log_cursor_id = None;
             }
         }
     }

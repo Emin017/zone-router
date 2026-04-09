@@ -76,6 +76,8 @@ pub fn handle_input(
                 if len > 0 {
                     tui.internal_log_cursor =
                         (tui.internal_log_cursor + 1).min(len.saturating_sub(1));
+                    let deque_idx = len.saturating_sub(1) - tui.internal_log_cursor;
+                    tui.internal_log_cursor_id = tui.internal_log.get(deque_idx).map(|e| e.id);
                 }
             }
         },
@@ -104,7 +106,12 @@ pub fn handle_input(
                 }
             }
             FocusPanel::InternalLog => {
-                tui.internal_log_cursor = tui.internal_log_cursor.saturating_sub(1);
+                let len = tui.internal_log.len();
+                if len > 0 {
+                    tui.internal_log_cursor = tui.internal_log_cursor.saturating_sub(1);
+                    let deque_idx = len.saturating_sub(1) - tui.internal_log_cursor;
+                    tui.internal_log_cursor_id = tui.internal_log.get(deque_idx).map(|e| e.id);
+                }
             }
         },
         KeyCode::Char('G') => {
@@ -118,12 +125,19 @@ pub fn handle_input(
                 if len > 0 {
                     tui.internal_log_cursor =
                         (tui.internal_log_cursor + 1).min(len.saturating_sub(1));
+                    let deque_idx = len.saturating_sub(1) - tui.internal_log_cursor;
+                    tui.internal_log_cursor_id = tui.internal_log.get(deque_idx).map(|e| e.id);
                 }
             }
         }
         KeyCode::Up => {
             if tui.focus == FocusPanel::InternalLog {
-                tui.internal_log_cursor = tui.internal_log_cursor.saturating_sub(1);
+                let len = tui.internal_log.len();
+                if len > 0 {
+                    tui.internal_log_cursor = tui.internal_log_cursor.saturating_sub(1);
+                    let deque_idx = len.saturating_sub(1) - tui.internal_log_cursor;
+                    tui.internal_log_cursor_id = tui.internal_log.get(deque_idx).map(|e| e.id);
+                }
             }
         }
         KeyCode::Char('g') => {
