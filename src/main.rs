@@ -69,7 +69,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialise structured logging before spawning any tasks.
     let (log_rx, _log_guard, log_dir) = zone_router::logging::init_tracing();
     if let Some(ref dir) = log_dir {
-        info!(path = %dir.display(), "logging to file");
+        let today = chrono::Utc::now().format("%Y-%m-%d");
+        let log_file = dir.join(format!("zone-router.log.{today}"));
+        info!(path = %log_file.display(), "logging to file");
     } else {
         info!("file logging disabled (log directory not writable)");
     }
