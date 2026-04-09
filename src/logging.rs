@@ -127,11 +127,12 @@ fn is_writable_dir(log_dir: &std::path::Path) -> bool {
 
 /// Initialise the global tracing subscriber with a file layer and a TUI channel layer.
 ///
-/// Returns the log receiver for the TUI and a guard that must be held for the
-/// lifetime of the program (dropping it flushes and closes the file writer).
+/// Returns the log receiver for the TUI, a guard that must be held for the
+/// lifetime of the program, and the log directory path if file logging is active.
 pub fn init_tracing() -> (
     mpsc::Receiver<LogEntry>,
     tracing_appender::non_blocking::WorkerGuard,
+    Option<std::path::PathBuf>,
 ) {
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::{EnvFilter, fmt};
@@ -155,20 +156,20 @@ pub fn init_tracing() -> (
         .map(|base| base.join("zone-router/logs"))
         .filter(|dir| is_writable_dir(dir));
 
-    let (file_layer, guard) = if let Some(log_dir) = writable_log_dir {
-        let file_appender = tracing_appender::rolling::daily(log_dir, "zone-router.log");
+    let (file_layer, guard, log_dir_out) = if let Some(log_dir) = writable_log_dir {
+        let file_appender = tracing_appender::rolling::daily(&log_dir, "zone-router.log");
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
         let file_filter = make_filter("zone_router=debug");
         let layer = fmt::layer()
             .with_writer(non_blocking)
             .with_ansi(false)
             .with_filter(file_filter);
-        (Some(layer), guard)
+        (Some(layer), guard, Some(log_dir))
     } else {
         // Log dir unavailable — TUI layer still works, file layer skipped.
         // A sink guard keeps the return type uniform.
         let (_sink_nb, sink_guard) = tracing_appender::non_blocking(std::io::sink());
-        (None, sink_guard)
+        (None, sink_guard, None)
     };
 
     // TUI layer — sends LogEntry structs through the channel.
@@ -180,7 +181,7 @@ pub fn init_tracing() -> (
         .with(tui_layer)
         .init();
 
-    (rx, guard)
+    (rx, guard, log_dir_out)
 }
 
 #[cfg(test)]

@@ -67,7 +67,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to bind to {listen_addr}: {e}"))?;
 
     // Initialise structured logging before spawning any tasks.
-    let (log_rx, _log_guard) = zone_router::logging::init_tracing();
+    let (log_rx, _log_guard, log_dir) = zone_router::logging::init_tracing();
+    if let Some(ref dir) = log_dir {
+        info!(path = %dir.display(), "logging to file");
+    } else {
+        info!("file logging disabled (log directory not writable)");
+    }
 
     let state = Arc::new(RwLock::new(app_state));
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
