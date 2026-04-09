@@ -373,21 +373,95 @@ mod tests {
     }
 
     #[test]
-    fn second_global_subscriber_is_rejected() {
-        // Set a global subscriber, then verify a second set_global_default call
-        // returns Err — this is the mechanism that prevents double-init panics
-        // when init_tracing() uses .init() (which calls set_global_default).
-        use tracing_subscriber::prelude::*;
+    fn file_override_filter_includes_external_targets() {
+        use std::fs;
 
-        let first = tracing_subscriber::registry();
-        // Use try_init to avoid panicking — it returns Err if already set.
-        let result = first.try_init();
-        // First call should succeed.
-        assert!(result.is_ok(), "first global subscriber should be accepted");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file_appender = tracing_appender::rolling::daily(dir.path(), "test-override.log");
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
-        let second = tracing_subscriber::registry();
-        let result = second.try_init();
-        // Second call must fail — this proves the double-init guard works.
-        assert!(result.is_err(), "second global subscriber must be rejected");
+        // Simulate RUST_LOG=info — override includes all targets.
+        let file_layer = {
+            use tracing_subscriber::fmt;
+            fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false)
+                .with_filter(EnvFilter::new("info"))
+        };
+
+        let subscriber = tracing_subscriber::registry().with(file_layer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "hyper::server", "hyper in file");
+            tracing::info!(target: "zone_router::test", "zone_router in file");
+        });
+
+        drop(guard);
+
+        let log_path = fs::read_dir(dir.path())
+            .expect("read dir")
+            .find_map(|e| e.ok())
+            .expect("log file")
+            .path();
+        let content = fs::read_to_string(&log_path).expect("read");
+
+        assert!(
+            content.contains("hyper in file"),
+            "override filter should include external targets"
+        );
+        assert!(
+            content.contains("zone_router in file"),
+            "override filter should include zone_router"
+        );
+    }
+
+    #[test]
+    fn daily_rolling_filename_pattern() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let prefix = "test-rolling.log";
+        let file_appender = tracing_appender::rolling::daily(dir.path(), prefix);
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+        let file_layer = {
+            use tracing_subscriber::fmt;
+            fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false)
+                .with_filter(EnvFilter::new("zone_router=debug"))
+        };
+
+        let subscriber = tracing_subscriber::registry().with(file_layer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "zone_router::test", "filename test");
+        });
+
+        drop(guard);
+
+        let log_path = fs::read_dir(dir.path())
+            .expect("read dir")
+            .find_map(|e| e.ok())
+            .expect("log file")
+            .path();
+
+        let filename = log_path.file_name().unwrap().to_string_lossy();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        assert!(
+            filename.starts_with(prefix) && filename.contains(&today),
+            "daily rolling filename should be '{prefix}.{today}', got '{filename}'"
+        );
+    }
+
+    /// This test calls the real `init_tracing()` twice, which panics on the
+    /// second `.init()` call. It is isolated in a subprocess by the
+    /// `logging_subprocess` integration test so the global subscriber doesn't
+    /// poison the rest of the suite.
+    #[test]
+    #[should_panic(expected = "a global default trace dispatcher has already been set")]
+    fn double_init_tracing_panics() {
+        let _ = crate::logging::init_tracing();
+        // Second call: .init() calls set_global_default which returns Err,
+        // which .init() unwraps, causing a panic.
+        let _ = crate::logging::init_tracing();
     }
 }
