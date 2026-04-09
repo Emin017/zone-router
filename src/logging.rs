@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
+use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::Layer;
 
 #[derive(Debug, Clone)]
 pub struct LogEntry {
@@ -134,7 +134,7 @@ pub fn init_tracing() -> (
     tracing_appender::non_blocking::WorkerGuard,
 ) {
     use tracing_subscriber::prelude::*;
-    use tracing_subscriber::{fmt, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt};
 
     let (tx, rx) = mpsc::channel(TUI_CHANNEL_CAP);
 
@@ -186,8 +186,8 @@ pub fn init_tracing() -> (
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::prelude::*;
 
     #[test]
     fn tui_log_layer_sends_entries() {

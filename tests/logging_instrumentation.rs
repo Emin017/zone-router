@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::EnvFilter;
 
 /// In-memory writer for capturing tracing output.
 #[derive(Clone)]

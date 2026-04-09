@@ -501,11 +501,7 @@ pub fn parse_model_map_input(input: &str) -> Option<ModelMap> {
             _ => return None,
         }
     }
-    if mm.has_any() {
-        Some(mm)
-    } else {
-        None
-    }
+    if mm.has_any() { Some(mm) } else { None }
 }
 
 /// Format a `ModelMap` as a comma-separated `key=value` string for pre-filling input.
