@@ -60,6 +60,9 @@ fn tab_switches_focus() {
     assert_eq!(tui.focus, FocusPanel::RequestLog);
 
     zone_router::tui::input::handle_input(key(KeyCode::Tab), &mut tui, &state, rt.handle());
+    assert_eq!(tui.focus, FocusPanel::InternalLog);
+
+    zone_router::tui::input::handle_input(key(KeyCode::Tab), &mut tui, &state, rt.handle());
     assert_eq!(tui.focus, FocusPanel::Backends);
 }
 
@@ -67,7 +70,13 @@ fn tab_switches_focus() {
 fn backtab_switches_focus() {
     let (mut tui, state, rt, _dir) = make_tui_and_state();
     zone_router::tui::input::handle_input(key(KeyCode::BackTab), &mut tui, &state, rt.handle());
+    assert_eq!(tui.focus, FocusPanel::InternalLog);
+
+    zone_router::tui::input::handle_input(key(KeyCode::BackTab), &mut tui, &state, rt.handle());
     assert_eq!(tui.focus, FocusPanel::RequestLog);
+
+    zone_router::tui::input::handle_input(key(KeyCode::BackTab), &mut tui, &state, rt.handle());
+    assert_eq!(tui.focus, FocusPanel::Backends);
 }
 
 #[test]

@@ -5,6 +5,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use tracing::Level;
 
 use super::app::{FocusPanel, InputMode, TuiState};
 
@@ -17,12 +18,22 @@ fn focus_border_style(panel: &FocusPanel, current: &FocusPanel) -> Style {
 }
 
 pub fn draw(frame: &mut Frame, state: &AppState, tui: &mut TuiState) {
+    let expanded = tui.focus == FocusPanel::InternalLog;
+    let log_panel_height = if expanded {
+        // Up to 40% of total height, clamped to 5..=10 lines (+ 2 for border)
+        let max = ((frame.area().height as u32 * 40 / 100) as u16).clamp(7, 12);
+        Constraint::Length(max)
+    } else {
+        Constraint::Length(1)
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // status bar
             Constraint::Min(6),    // main area
-            Constraint::Min(8),    // request log
+            Constraint::Min(5),    // request log
+            log_panel_height,      // internal log (collapsed or expanded)
             Constraint::Length(3), // help / input bar
         ])
         .split(frame.area());
@@ -35,7 +46,8 @@ pub fn draw(frame: &mut Frame, state: &AppState, tui: &mut TuiState) {
         draw_detail_panel(frame, state, tui, chunks[2]);
     }
 
-    draw_help_bar(frame, tui, state, chunks[3]);
+    draw_internal_log(frame, tui, chunks[3]);
+    draw_help_bar(frame, tui, state, chunks[4]);
 }
 
 fn draw_status_bar(frame: &mut Frame, state: &AppState, area: Rect) {
@@ -336,6 +348,112 @@ fn draw_detail_panel(frame: &mut Frame, state: &AppState, tui: &mut TuiState, lo
 
     frame.render_widget(Clear, panel_area);
     frame.render_widget(paragraph, panel_area);
+}
+
+fn level_color(level: &Level) -> Color {
+    match *level {
+        Level::ERROR => Color::Red,
+        Level::WARN => Color::Yellow,
+        Level::INFO => Color::Green,
+        _ => Color::DarkGray,
+    }
+}
+
+fn short_target(target: &str) -> &str {
+    target.strip_prefix("zone_router::").unwrap_or(target)
+}
+
+fn draw_internal_log(frame: &mut Frame, tui: &TuiState, area: Rect) {
+    let expanded = tui.focus == FocusPanel::InternalLog;
+
+    if !expanded {
+        // Collapsed: single line with latest entry and unread count
+        let text = tui
+            .internal_log
+            .back()
+            .map(|entry| {
+                Line::from(vec![
+                    Span::styled(
+                        format!(" \u{25b6} Logs ({}) ", tui.internal_log_unread),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::raw("\u{2502} "),
+                    Span::styled(
+                        format!("[{}]", entry.level),
+                        Style::default().fg(level_color(&entry.level)),
+                    ),
+                    Span::raw(format!(
+                        " {}: {}",
+                        short_target(&entry.target),
+                        entry.message
+                    )),
+                ])
+            })
+            .unwrap_or_else(|| {
+                Line::from(Span::styled(
+                    " \u{25b6} Logs (0)",
+                    Style::default().fg(Color::DarkGray),
+                ))
+            });
+        let paragraph = Paragraph::new(text);
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    // Expanded: scrollable list with border
+    let visible_height = area.height.saturating_sub(2) as usize;
+    let log_len = tui.internal_log.len();
+    let log_cursor = tui.internal_log_cursor.min(log_len.saturating_sub(1));
+
+    let scroll = if log_cursor >= visible_height {
+        log_cursor - visible_height + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = (0..log_len)
+        .rev()
+        .skip(scroll)
+        .take(visible_height)
+        .filter_map(|deque_idx| {
+            let entry = tui.internal_log.get(deque_idx)?;
+            let display_idx = log_len.saturating_sub(1) - deque_idx;
+            let is_selected = display_idx == log_cursor;
+
+            let cursor_marker = if is_selected { ">" } else { " " };
+            let line = Line::from(vec![
+                Span::raw(format!(
+                    "{} {} ",
+                    cursor_marker,
+                    entry.timestamp.format("%H:%M:%S")
+                )),
+                Span::styled(
+                    format!("[{:<5}]", entry.level),
+                    Style::default().fg(level_color(&entry.level)),
+                ),
+                Span::styled(
+                    format!(" {:<20} ", short_target(&entry.target)),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::raw(&entry.message),
+            ]);
+            let style = if is_selected {
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .bg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+            Some(ListItem::new(line).style(style))
+        })
+        .collect();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Internal Logs ({log_len}) "))
+        .border_style(focus_border_style(&FocusPanel::InternalLog, &tui.focus));
+    let list = List::new(items).block(block);
+    frame.render_widget(list, area);
 }
 
 fn draw_help_bar(frame: &mut Frame, tui: &TuiState, state: &AppState, area: Rect) {

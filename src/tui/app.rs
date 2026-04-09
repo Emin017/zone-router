@@ -1,3 +1,4 @@
+use crate::logging::LogEntry;
 use crate::state::AppState;
 use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -6,13 +7,16 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use std::collections::VecDeque;
 use std::io::stdout;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 
 use super::input::{handle_input, handle_input_mode};
 use super::ui::draw;
+
+const INTERNAL_LOG_CAP: usize = 500;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputMode {
@@ -36,18 +40,27 @@ pub enum InputMode {
 pub enum FocusPanel {
     Backends,
     RequestLog,
+    InternalLog,
 }
 
 impl FocusPanel {
-    pub fn toggle(&self) -> Self {
+    pub fn next(&self) -> Self {
         match self {
             Self::Backends => Self::RequestLog,
+            Self::RequestLog => Self::InternalLog,
+            Self::InternalLog => Self::Backends,
+        }
+    }
+
+    pub fn prev(&self) -> Self {
+        match self {
+            Self::Backends => Self::InternalLog,
             Self::RequestLog => Self::Backends,
+            Self::InternalLog => Self::RequestLog,
         }
     }
 }
 
-#[derive(Debug, Clone)]
 pub struct TuiState {
     pub cursor: usize,
     pub mode: InputMode,
@@ -66,10 +79,22 @@ pub struct TuiState {
     pub auth_type_rejected: bool,
     pub model_map_rejected: bool,
     pub pending_auth_type: Option<crate::config::AuthType>,
+    // Internal log panel state
+    pub internal_log: VecDeque<LogEntry>,
+    pub internal_log_rx: mpsc::UnboundedReceiver<LogEntry>,
+    pub internal_log_cursor: usize,
+    pub internal_log_unread: usize,
 }
 
 impl Default for TuiState {
     fn default() -> Self {
+        let (_tx, rx) = mpsc::unbounded_channel();
+        Self::new(rx)
+    }
+}
+
+impl TuiState {
+    pub fn new(log_rx: mpsc::UnboundedReceiver<LogEntry>) -> Self {
         Self {
             cursor: 0,
             mode: InputMode::Normal,
@@ -88,6 +113,24 @@ impl Default for TuiState {
             auth_type_rejected: false,
             model_map_rejected: false,
             pending_auth_type: None,
+            internal_log: VecDeque::new(),
+            internal_log_rx: log_rx,
+            internal_log_cursor: 0,
+            internal_log_unread: 0,
+        }
+    }
+
+    /// Drain pending log entries from the channel into the ring buffer.
+    pub fn drain_log_channel(&mut self) {
+        while let Ok(entry) = self.internal_log_rx.try_recv() {
+            self.internal_log.push_back(entry);
+            if self.internal_log.len() > INTERNAL_LOG_CAP {
+                self.internal_log.pop_front();
+                if self.internal_log_cursor > 0 {
+                    self.internal_log_cursor -= 1;
+                }
+            }
+            self.internal_log_unread += 1;
         }
     }
 }
@@ -95,12 +138,13 @@ impl Default for TuiState {
 pub fn run_tui(
     state: Arc<RwLock<AppState>>,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
+    log_rx: mpsc::UnboundedReceiver<LogEntry>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
-    let mut tui_state = TuiState::default();
+    let mut tui_state = TuiState::new(log_rx);
 
     let result = run_event_loop(&mut terminal, &state, &mut tui_state);
 
@@ -118,6 +162,7 @@ fn run_event_loop(
     let rt = tokio::runtime::Handle::current();
 
     loop {
+        tui_state.drain_log_channel();
         let app_state = rt.block_on(state.read()).clone();
         terminal.draw(|frame| draw(frame, &app_state, tui_state))?;
 

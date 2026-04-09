@@ -12,6 +12,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Instant;
 use tokio::sync::RwLock;
+use tracing::{debug, error, warn};
 
 const AUTH_HEADER: &str = "x-api-key";
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -225,12 +226,20 @@ pub async fn proxy_handler(
     };
 
     if request_token != local_token {
+        if request_token.is_empty() {
+            warn!("auth failed: missing api key header");
+        } else {
+            warn!("auth failed: invalid api key");
+        }
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
     let backend = match backend_info {
         Some(b) => b,
-        None => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        None => {
+            error!("no active backend configured");
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
     };
 
     let target_url = format!(
@@ -254,12 +263,24 @@ pub async fn proxy_handler(
 
     let body_bytes = match axum::body::to_bytes(body, 200 * 1024 * 1024).await {
         Ok(b) => b,
-        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        Err(_) => {
+            warn!("request body too large or malformed");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
     };
 
+    let original_model = extract_model(&body_bytes);
     let (body_bytes, body_changed) = match backend.model_map.as_ref().filter(|mm| mm.has_any()) {
         Some(mm) => {
             let (rewritten, changed) = rewrite_model(body_bytes, mm);
+            if changed {
+                let new_model = extract_model(&rewritten);
+                debug!(
+                    original = original_model.as_deref().unwrap_or("(none)"),
+                    rewritten = new_model.as_deref().unwrap_or("(none)"),
+                    "model rewritten"
+                );
+            }
             (rewritten, changed)
         }
         None => (body_bytes, false),
@@ -370,7 +391,8 @@ pub async fn proxy_handler(
                     .into_response()
             }
         }
-        Err(_) => {
+        Err(e) => {
+            error!(backend = %backend_name, url = %target_url, "backend request failed: {}", e);
             let entry = make_log_entry(
                 &backend_name,
                 start,

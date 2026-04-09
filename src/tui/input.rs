@@ -56,7 +56,6 @@ pub fn handle_input(
                 let s = rt.block_on(state.read());
                 let len = s.stats.log.len();
                 if len > 0 {
-                    // Resolve current position from stable ID before moving
                     let current = tui
                         .log_cursor_id
                         .and_then(|id| {
@@ -70,6 +69,13 @@ pub fn handle_input(
                     tui.log_cursor = (current + 1).min(len.saturating_sub(1));
                     let deque_idx = len.saturating_sub(1) - tui.log_cursor;
                     tui.log_cursor_id = s.stats.log.get(deque_idx).map(|e| e.id);
+                }
+            }
+            FocusPanel::InternalLog => {
+                let len = tui.internal_log.len();
+                if len > 0 {
+                    tui.internal_log_cursor =
+                        (tui.internal_log_cursor + 1).min(len.saturating_sub(1));
                 }
             }
         },
@@ -96,6 +102,9 @@ pub fn handle_input(
                         len.saturating_sub(1) - tui.log_cursor.min(len.saturating_sub(1));
                     tui.log_cursor_id = s.stats.log.get(deque_idx).map(|e| e.id);
                 }
+            }
+            FocusPanel::InternalLog => {
+                tui.internal_log_cursor = tui.internal_log_cursor.saturating_sub(1);
             }
         },
         KeyCode::Char('G') => {
@@ -183,8 +192,17 @@ pub fn handle_input(
             tui.input_buffer.clear();
             tui.search_query.clear();
         }
-        KeyCode::Tab | KeyCode::BackTab => {
-            tui.focus = tui.focus.toggle();
+        KeyCode::Tab => {
+            tui.focus = tui.focus.next();
+            if tui.focus == FocusPanel::InternalLog {
+                tui.internal_log_unread = 0;
+            }
+        }
+        KeyCode::BackTab => {
+            tui.focus = tui.focus.prev();
+            if tui.focus == FocusPanel::InternalLog {
+                tui.internal_log_unread = 0;
+            }
         }
         _ => {}
     }

@@ -1,6 +1,7 @@
 use crate::config::{AuthType, Backend, Config, ConfigError, ModelMap};
 use crate::stats::StatsCollector;
 use std::path::PathBuf;
+use tracing::{debug, info};
 
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -41,6 +42,14 @@ impl AppState {
 
     pub fn switch_backend(&mut self, index: usize) -> bool {
         if index < self.config.backends.len() && index != self.active_index {
+            let from = self
+                .config
+                .backends
+                .get(self.active_index)
+                .map(|b| b.name.as_str())
+                .unwrap_or("(none)");
+            let to = self.config.backends[index].name.as_str();
+            info!(from = from, to = to, "switched active backend");
             self.active_index = index;
             let _ = self.persist_config();
             true
@@ -55,10 +64,12 @@ impl AppState {
         config.backends.iter_mut().enumerate().for_each(|(i, b)| {
             b.active = i == self.active_index;
         });
+        debug!("config persisted to {}", self.config_path.display());
         config.save(&self.config_path)
     }
 
     pub fn add_backend(&mut self, backend: Backend) {
+        info!(name = %backend.name, "backend added");
         self.config.backends.push(backend);
         let _ = self.persist_config();
     }
@@ -67,6 +78,8 @@ impl AppState {
         if index >= self.config.backends.len() {
             return false;
         }
+        let name = self.config.backends[index].name.clone();
+        info!(name = %name, "backend removed");
         self.config.backends.remove(index);
         if self.config.backends.is_empty() {
             self.active_index = 0;

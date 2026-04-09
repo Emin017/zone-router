@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tower::{Service, ServiceExt};
+use tracing::warn;
 
 const BODY_LIMIT: usize = 200 * 1024 * 1024; // 200MB
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -79,7 +80,7 @@ pub async fn start_with_listener(
             result = listener.accept() => match result {
                 Ok((stream, _)) => stream,
                 Err(e) => {
-                    eprintln!("accept error: {e}");
+                    warn!("accept error: {}", e);
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
@@ -102,13 +103,13 @@ pub async fn start_with_listener(
             tokio::select! {
                 result = &mut conn => {
                     if let Err(e) = result {
-                        eprintln!("connection error: {e}");
+                        warn!("connection error: {}", e);
                     }
                 }
                 () = wait_for_shutdown(&mut conn_rx) => {
                     conn.as_mut().graceful_shutdown();
                     if let Err(e) = conn.await {
-                        eprintln!("connection error: {e}");
+                        warn!("connection error: {}", e);
                     }
                 }
             }
@@ -134,6 +135,7 @@ pub async fn force_shutdown(
         .await
         .is_err()
     {
+        warn!("shutdown timeout, aborting server");
         server_handle.abort();
     }
 }
