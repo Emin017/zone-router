@@ -1,17 +1,17 @@
 use crate::logging::LogEntry;
 use crate::state::AppState;
-use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::Terminal;
+use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
 use std::collections::VecDeque;
 use std::io::stdout;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc, RwLock};
 
 use super::input::{handle_input, handle_input_mode};
 use super::ui::draw;
@@ -121,14 +121,19 @@ impl TuiState {
     }
 
     /// Drain pending log entries from the channel into the ring buffer.
+    /// Only increments the unread counter when the panel is not focused,
+    /// so entries seen while expanded don't appear as "new" on collapse.
     pub fn drain_log_channel(&mut self) {
+        let track_unread = self.focus != FocusPanel::InternalLog;
         while let Ok(entry) = self.internal_log_rx.try_recv() {
             self.internal_log.push_back(entry);
             if self.internal_log.len() > INTERNAL_LOG_CAP {
                 self.internal_log.pop_front();
                 self.internal_log_cursor = self.internal_log_cursor.saturating_sub(1);
             }
-            self.internal_log_unread += 1;
+            if track_unread {
+                self.internal_log_unread += 1;
+            }
         }
     }
 }
@@ -180,5 +185,73 @@ fn run_event_loop(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::logging::LogEntry;
+    use tracing::Level;
+
+    fn make_entry(id: u64) -> LogEntry {
+        LogEntry {
+            id,
+            timestamp: chrono::Local::now(),
+            level: Level::INFO,
+            target: "zone_router::test".into(),
+            message: format!("entry {id}"),
+        }
+    }
+
+    #[test]
+    fn ring_buffer_caps_at_500() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut state = TuiState::new(rx);
+        for i in 0..600 {
+            tx.send(make_entry(i)).unwrap();
+        }
+        state.drain_log_channel();
+        assert_eq!(state.internal_log.len(), INTERNAL_LOG_CAP);
+        // Oldest entries evicted — first entry should be id 100
+        assert_eq!(state.internal_log.front().unwrap().id, 100);
+        assert_eq!(state.internal_log.back().unwrap().id, 599);
+    }
+
+    #[test]
+    fn cursor_clamped_on_eviction() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut state = TuiState::new(rx);
+        // Fill to exactly cap, cursor at end
+        for i in 0..INTERNAL_LOG_CAP {
+            tx.send(make_entry(i as u64)).unwrap();
+        }
+        state.drain_log_channel();
+        state.internal_log_cursor = INTERNAL_LOG_CAP - 1; // last entry
+
+        // Add one more — oldest evicted, cursor should decrement
+        tx.send(make_entry(500)).unwrap();
+        state.drain_log_channel();
+        assert_eq!(state.internal_log_cursor, INTERNAL_LOG_CAP - 2);
+    }
+
+    #[test]
+    fn unread_increments_only_when_not_focused() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut state = TuiState::new(rx);
+        assert_eq!(state.focus, FocusPanel::Backends);
+
+        // Not focused on InternalLog — unread should increment
+        tx.send(make_entry(0)).unwrap();
+        state.drain_log_channel();
+        assert_eq!(state.internal_log_unread, 1);
+
+        // Switch focus to InternalLog
+        state.focus = FocusPanel::InternalLog;
+        tx.send(make_entry(1)).unwrap();
+        state.drain_log_channel();
+        // Entry added but unread NOT incremented while focused
+        assert_eq!(state.internal_log.len(), 2);
+        assert_eq!(state.internal_log_unread, 1);
     }
 }

@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::Layer;
 
 #[derive(Debug, Clone)]
 pub struct LogEntry {
@@ -90,9 +90,18 @@ pub fn init_tracing() -> (
     tracing_appender::non_blocking::WorkerGuard,
 ) {
     use tracing_subscriber::prelude::*;
-    use tracing_subscriber::{EnvFilter, fmt};
+    use tracing_subscriber::{fmt, EnvFilter};
 
     let (tx, rx) = mpsc::unbounded_channel();
+
+    // When RUST_LOG is set, both layers use it; otherwise each uses its own default.
+    let rust_log = std::env::var("RUST_LOG").ok();
+    let make_filter = |default: &str| -> EnvFilter {
+        rust_log
+            .as_deref()
+            .and_then(|v| EnvFilter::try_new(v).ok())
+            .unwrap_or_else(|| EnvFilter::new(default))
+    };
 
     // File layer — daily rolling under XDG state dir.
     let log_dir = dirs::state_dir()
@@ -101,17 +110,14 @@ pub fn init_tracing() -> (
     let file_appender = tracing_appender::rolling::daily(&log_dir, "zone-router.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
-    let file_filter = EnvFilter::new("zone_router=debug");
+    let file_filter = make_filter("zone_router=debug");
     let file_layer = fmt::layer()
         .with_writer(non_blocking)
         .with_ansi(false)
         .with_filter(file_filter);
 
     // TUI layer — sends LogEntry structs through the channel.
-    let tui_filter = std::env::var("RUST_LOG")
-        .ok()
-        .and_then(|v| EnvFilter::try_new(v).ok())
-        .unwrap_or_else(|| EnvFilter::new("zone_router=info"));
+    let tui_filter = make_filter("zone_router=info");
     let tui_layer = TuiLogLayer::new(tx).with_filter(tui_filter);
 
     tracing_subscriber::registry()
@@ -126,6 +132,7 @@ pub fn init_tracing() -> (
 mod tests {
     use super::*;
     use tracing_subscriber::prelude::*;
+    use tracing_subscriber::EnvFilter;
 
     #[test]
     fn tui_log_layer_sends_entries() {
@@ -177,5 +184,48 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             tracing::error!(target: "zone_router::test", "should not panic");
         });
+    }
+
+    #[test]
+    fn default_tui_filter_suppresses_debug() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let filter = std::env::var("RUST_LOG")
+            .ok()
+            .and_then(|v| EnvFilter::try_new(v).ok())
+            .unwrap_or_else(|| EnvFilter::new("zone_router=info"));
+        let layer = TuiLogLayer::new(tx).with_filter(filter);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug!(target: "zone_router::test", "debug msg");
+            tracing::info!(target: "zone_router::test", "info msg");
+        });
+
+        // Only the info event should arrive; the debug event is filtered out.
+        let entry = rx.try_recv().expect("should receive the info entry");
+        assert_eq!(entry.level, Level::INFO);
+        assert_eq!(entry.message, "info msg");
+        assert!(rx.try_recv().is_err(), "no more entries expected");
+    }
+
+    #[test]
+    fn non_zone_router_target_suppressed_by_default() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let filter = std::env::var("RUST_LOG")
+            .ok()
+            .and_then(|v| EnvFilter::try_new(v).ok())
+            .unwrap_or_else(|| EnvFilter::new("zone_router=info"));
+        let layer = TuiLogLayer::new(tx).with_filter(filter);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "hyper::server", "hyper event");
+            tracing::info!(target: "zone_router::test", "zone_router event");
+        });
+
+        // Only the zone_router event should arrive; hyper is excluded by default.
+        let entry = rx.try_recv().expect("should receive zone_router entry");
+        assert_eq!(entry.target, "zone_router::test");
+        assert!(rx.try_recv().is_err(), "no more entries expected");
     }
 }

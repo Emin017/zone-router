@@ -1420,3 +1420,74 @@ fn detail_view_blocks_normal_mode_keys() {
         );
     }
 }
+
+#[test]
+fn arrow_down_scrolls_internal_log() {
+    let (mut tui, state, rt, _dir) = make_tui_and_state();
+    tui.focus = FocusPanel::InternalLog;
+
+    // Push entries directly into internal_log for test purposes
+    for i in 0..5 {
+        tui.internal_log.push_back(zone_router::logging::LogEntry {
+            id: i,
+            timestamp: chrono::Local::now(),
+            level: tracing::Level::INFO,
+            target: format!("zone_router::test::{i}"),
+            message: format!("entry {i}"),
+        });
+    }
+    assert_eq!(tui.internal_log_cursor, 0);
+
+    zone_router::tui::input::handle_input(key(KeyCode::Down), &mut tui, &state, rt.handle());
+    assert_eq!(tui.internal_log_cursor, 1);
+
+    zone_router::tui::input::handle_input(key(KeyCode::Down), &mut tui, &state, rt.handle());
+    assert_eq!(tui.internal_log_cursor, 2);
+}
+
+#[test]
+fn arrow_up_scrolls_internal_log() {
+    let (mut tui, state, rt, _dir) = make_tui_and_state();
+    tui.focus = FocusPanel::InternalLog;
+
+    for i in 0..5 {
+        tui.internal_log.push_back(zone_router::logging::LogEntry {
+            id: i,
+            timestamp: chrono::Local::now(),
+            level: tracing::Level::INFO,
+            target: format!("zone_router::test::{i}"),
+            message: format!("entry {i}"),
+        });
+    }
+    tui.internal_log_cursor = 3;
+
+    zone_router::tui::input::handle_input(key(KeyCode::Up), &mut tui, &state, rt.handle());
+    assert_eq!(tui.internal_log_cursor, 2);
+
+    zone_router::tui::input::handle_input(key(KeyCode::Up), &mut tui, &state, rt.handle());
+    assert_eq!(tui.internal_log_cursor, 1);
+}
+
+#[test]
+fn unread_resets_on_blur() {
+    let (mut tui, state, rt, _dir) = make_tui_and_state();
+    // Start on Backends, add some entries, switch to InternalLog
+    tui.focus = FocusPanel::InternalLog;
+    tui.internal_log_unread = 5;
+
+    // Tab away from InternalLog should reset unread
+    zone_router::tui::input::handle_input(key(KeyCode::Tab), &mut tui, &state, rt.handle());
+    assert_eq!(tui.focus, FocusPanel::Backends);
+    assert_eq!(tui.internal_log_unread, 0);
+}
+
+#[test]
+fn backtab_resets_unread_on_blur() {
+    let (mut tui, state, rt, _dir) = make_tui_and_state();
+    tui.focus = FocusPanel::InternalLog;
+    tui.internal_log_unread = 3;
+
+    zone_router::tui::input::handle_input(key(KeyCode::BackTab), &mut tui, &state, rt.handle());
+    assert_eq!(tui.focus, FocusPanel::RequestLog);
+    assert_eq!(tui.internal_log_unread, 0);
+}

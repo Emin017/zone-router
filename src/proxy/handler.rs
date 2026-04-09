@@ -336,6 +336,9 @@ pub async fn proxy_handler(
 
                 tokio::spawn(async move {
                     let usage = done_rx.await.unwrap_or(None);
+                    if usage.is_some() {
+                        debug!("sse stream completed, usage extracted");
+                    }
                     let entry = make_log_entry(
                         &backend_name,
                         start,

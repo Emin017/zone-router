@@ -1,7 +1,7 @@
 use crate::state::AppState;
-use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::response::IntoResponse;
+use axum::Router;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use std::future::Future;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tower::{Service, ServiceExt};
-use tracing::warn;
+use tracing::{info, warn};
 
 const BODY_LIMIT: usize = 200 * 1024 * 1024; // 200MB
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -131,6 +131,7 @@ pub async fn force_shutdown(
     server_handle: &mut tokio::task::JoinHandle<()>,
 ) {
     state.write().await.shutdown = true;
+    info!("shutting down");
     if tokio::time::timeout(SHUTDOWN_TIMEOUT, &mut *server_handle)
         .await
         .is_err()

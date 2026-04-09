@@ -112,6 +112,20 @@ pub fn handle_input(
                 tui.cursor = backend_count - 1;
             }
         }
+        KeyCode::Down => {
+            if tui.focus == FocusPanel::InternalLog {
+                let len = tui.internal_log.len();
+                if len > 0 {
+                    tui.internal_log_cursor =
+                        (tui.internal_log_cursor + 1).min(len.saturating_sub(1));
+                }
+            }
+        }
+        KeyCode::Up => {
+            if tui.focus == FocusPanel::InternalLog {
+                tui.internal_log_cursor = tui.internal_log_cursor.saturating_sub(1);
+            }
+        }
         KeyCode::Char('g') => {
             if tui.focus == FocusPanel::Backends && was_g_pressed {
                 tui.cursor = 0;
@@ -193,16 +207,16 @@ pub fn handle_input(
             tui.search_query.clear();
         }
         KeyCode::Tab => {
-            tui.focus = tui.focus.next();
             if tui.focus == FocusPanel::InternalLog {
                 tui.internal_log_unread = 0;
             }
+            tui.focus = tui.focus.next();
         }
         KeyCode::BackTab => {
-            tui.focus = tui.focus.prev();
             if tui.focus == FocusPanel::InternalLog {
                 tui.internal_log_unread = 0;
             }
+            tui.focus = tui.focus.prev();
         }
         _ => {}
     }
@@ -526,7 +540,11 @@ pub fn parse_model_map_input(input: &str) -> Option<ModelMap> {
             _ => return None,
         }
     }
-    if mm.has_any() { Some(mm) } else { None }
+    if mm.has_any() {
+        Some(mm)
+    } else {
+        None
+    }
 }
 
 /// Format a `ModelMap` as a comma-separated `key=value` string for pre-filling input.
