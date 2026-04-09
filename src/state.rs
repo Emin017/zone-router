@@ -64,8 +64,11 @@ impl AppState {
         config.backends.iter_mut().enumerate().for_each(|(i, b)| {
             b.active = i == self.active_index;
         });
-        debug!("config persisted to {}", self.config_path.display());
-        config.save(&self.config_path)
+        let result = config.save(&self.config_path);
+        if result.is_ok() {
+            debug!("config persisted to {}", self.config_path.display());
+        }
+        result
     }
 
     pub fn add_backend(&mut self, backend: Backend) {
