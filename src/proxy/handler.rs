@@ -382,7 +382,7 @@ pub async fn proxy_handler(
             }
         }
         Err(e) => {
-            error!(backend = %backend_name, url = %target_url, "backend request failed: {}", e);
+            error!(backend = %backend_name, "backend request failed: {}", e);
             let entry = make_log_entry(
                 &backend_name,
                 start,
