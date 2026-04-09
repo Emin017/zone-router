@@ -81,7 +81,7 @@ pub struct TuiState {
     pub pending_auth_type: Option<crate::config::AuthType>,
     // Internal log panel state
     pub internal_log: VecDeque<LogEntry>,
-    pub internal_log_rx: mpsc::UnboundedReceiver<LogEntry>,
+    pub internal_log_rx: mpsc::Receiver<LogEntry>,
     pub internal_log_cursor: usize,
     pub internal_log_cursor_id: Option<u64>,
     pub internal_log_unread: usize,
@@ -89,13 +89,13 @@ pub struct TuiState {
 
 impl Default for TuiState {
     fn default() -> Self {
-        let (_tx, rx) = mpsc::unbounded_channel();
+        let (_tx, rx) = mpsc::channel(1);
         Self::new(rx)
     }
 }
 
 impl TuiState {
-    pub fn new(log_rx: mpsc::UnboundedReceiver<LogEntry>) -> Self {
+    pub fn new(log_rx: mpsc::Receiver<LogEntry>) -> Self {
         Self {
             cursor: 0,
             mode: InputMode::Normal,
@@ -157,7 +157,7 @@ impl TuiState {
 pub fn run_tui(
     state: Arc<RwLock<AppState>>,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
-    log_rx: mpsc::UnboundedReceiver<LogEntry>,
+    log_rx: mpsc::Receiver<LogEntry>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -222,10 +222,10 @@ mod tests {
 
     #[test]
     fn ring_buffer_caps_at_500() {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(600);
         let mut state = TuiState::new(rx);
         for i in 0..600 {
-            tx.send(make_entry(i)).unwrap();
+            tx.try_send(make_entry(i)).unwrap();
         }
         state.drain_log_channel();
         assert_eq!(state.internal_log.len(), INTERNAL_LOG_CAP);
@@ -236,35 +236,35 @@ mod tests {
 
     #[test]
     fn cursor_clamped_on_eviction() {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(600);
         let mut state = TuiState::new(rx);
         // Fill to exactly cap, cursor at end
         for i in 0..INTERNAL_LOG_CAP {
-            tx.send(make_entry(i as u64)).unwrap();
+            tx.try_send(make_entry(i as u64)).unwrap();
         }
         state.drain_log_channel();
         state.internal_log_cursor = INTERNAL_LOG_CAP - 1; // last entry
 
         // Add one more — oldest evicted, cursor should decrement
-        tx.send(make_entry(500)).unwrap();
+        tx.try_send(make_entry(500)).unwrap();
         state.drain_log_channel();
         assert_eq!(state.internal_log_cursor, INTERNAL_LOG_CAP - 2);
     }
 
     #[test]
     fn unread_increments_only_when_not_focused() {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(600);
         let mut state = TuiState::new(rx);
         assert_eq!(state.focus, FocusPanel::Backends);
 
         // Not focused on InternalLog — unread should increment
-        tx.send(make_entry(0)).unwrap();
+        tx.try_send(make_entry(0)).unwrap();
         state.drain_log_channel();
         assert_eq!(state.internal_log_unread, 1);
 
         // Switch focus to InternalLog
         state.focus = FocusPanel::InternalLog;
-        tx.send(make_entry(1)).unwrap();
+        tx.try_send(make_entry(1)).unwrap();
         state.drain_log_channel();
         // Entry added but unread NOT incremented while focused
         assert_eq!(state.internal_log.len(), 2);

@@ -20,9 +20,13 @@ fn focus_border_style(panel: &FocusPanel, current: &FocusPanel) -> Style {
 pub fn draw(frame: &mut Frame, state: &AppState, tui: &mut TuiState) {
     let expanded = tui.focus == FocusPanel::InternalLog;
     let log_panel_height = if expanded {
-        // Up to 40% of total height, clamped to 5..=10 lines (+ 2 for border)
-        let max = ((frame.area().height as u32 * 40 / 100) as u16).clamp(7, 12);
-        Constraint::Length(max)
+        // Fixed overhead: status(3) + main-min(6) + request-min(5) + help(3) = 17.
+        // The log panel must fit in whatever vertical space remains.
+        const FIXED_OVERHEAD: u16 = 17;
+        let available = frame.area().height.saturating_sub(FIXED_OVERHEAD);
+        // Clamp to 5..=10 rows so the panel is always readable but never dominant.
+        let height = available.clamp(5, 10);
+        Constraint::Length(height)
     } else {
         Constraint::Length(1)
     };

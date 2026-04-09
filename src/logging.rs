@@ -30,13 +30,17 @@ impl fmt::Display for LogEntry {
     }
 }
 
+// Maximum number of log entries buffered in the TUI channel.
+// When the channel is full the sender drops new events (lossy but bounded).
+const TUI_CHANNEL_CAP: usize = 500;
+
 pub struct TuiLogLayer {
-    tx: mpsc::UnboundedSender<LogEntry>,
+    tx: mpsc::Sender<LogEntry>,
     counter: AtomicU64,
 }
 
 impl TuiLogLayer {
-    pub fn new(tx: mpsc::UnboundedSender<LogEntry>) -> Self {
+    pub fn new(tx: mpsc::Sender<LogEntry>) -> Self {
         Self {
             tx,
             counter: AtomicU64::new(0),
@@ -99,8 +103,8 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for TuiLogLayer {
             message: visitor.into_full_message(),
         };
 
-        // Silently drop if the receiver is gone (TUI exited before proxy).
-        let _ = self.tx.send(entry);
+        // Silently drop if the channel is full or the receiver is gone.
+        let _ = self.tx.try_send(entry);
     }
 }
 
@@ -114,13 +118,13 @@ pub fn log_server_started(addr: &str) {
 /// Returns the log receiver for the TUI and a guard that must be held for the
 /// lifetime of the program (dropping it flushes and closes the file writer).
 pub fn init_tracing() -> (
-    mpsc::UnboundedReceiver<LogEntry>,
+    mpsc::Receiver<LogEntry>,
     tracing_appender::non_blocking::WorkerGuard,
 ) {
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::{fmt, EnvFilter};
 
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(TUI_CHANNEL_CAP);
 
     // When RUST_LOG is set, both layers use it; otherwise each uses its own default.
     let rust_log = std::env::var("RUST_LOG").ok();
@@ -187,7 +191,7 @@ mod tests {
 
     #[test]
     fn tui_log_layer_sends_entries() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(100);
         let layer = TuiLogLayer::new(tx);
 
         let subscriber = tracing_subscriber::registry().with(layer);
@@ -204,7 +208,7 @@ mod tests {
 
     #[test]
     fn monotonic_id_increments() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(100);
         let layer = TuiLogLayer::new(tx);
 
         let subscriber = tracing_subscriber::registry().with(layer);
@@ -226,7 +230,7 @@ mod tests {
 
     #[test]
     fn dropped_receiver_does_not_panic() {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(100);
         let layer = TuiLogLayer::new(tx);
         drop(rx);
 
@@ -239,7 +243,7 @@ mod tests {
 
     #[test]
     fn default_tui_filter_suppresses_debug() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(100);
         // Construct the default filter directly — no ambient RUST_LOG involved.
         let filter = EnvFilter::new("zone_router=info");
         let layer = TuiLogLayer::new(tx).with_filter(filter);
@@ -259,7 +263,7 @@ mod tests {
 
     #[test]
     fn non_zone_router_target_suppressed_by_default() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(100);
         // Construct the default filter directly — no ambient RUST_LOG involved.
         let filter = EnvFilter::new("zone_router=info");
         let layer = TuiLogLayer::new(tx).with_filter(filter);
@@ -278,7 +282,7 @@ mod tests {
 
     #[test]
     fn override_filter_includes_external_targets() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(100);
         // Simulate RUST_LOG=info — override includes all targets at info level.
         let filter = EnvFilter::new("info");
         let layer = TuiLogLayer::new(tx).with_filter(filter);
