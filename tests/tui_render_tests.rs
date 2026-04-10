@@ -301,13 +301,15 @@ fn render_popup_exact_centered_geometry() {
     let buffer = terminal.backend().buffer().clone();
 
     // Compute the expected Request Log area using the same layout constraints
+    // (collapsed internal log panel = 1 line since focus is RequestLog, not InternalLog)
     let frame_area = ratatui::layout::Rect::new(0, 0, width, height);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(6),
-            Constraint::Min(8),
+            Constraint::Min(5),
+            Constraint::Length(1),
             Constraint::Length(3),
         ])
         .split(frame_area);

@@ -12,6 +12,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Instant;
 use tokio::sync::RwLock;
+use tracing::{debug, error, warn};
 
 const AUTH_HEADER: &str = "x-api-key";
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -21,7 +22,6 @@ fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
-        .no_proxy()
         .build()
         .expect("failed to build HTTP client")
 }
@@ -124,35 +124,22 @@ fn extract_usage_from_tail(tail: &[u8]) -> Option<TokenUsage> {
         .position(|&b| b & 0b1100_0000 != 0b1000_0000)
         .unwrap_or(tail.len());
     let text = std::str::from_utf8(tail.get(start..)?).ok()?;
-    for line in text.lines().rev() {
-        let payload = match line
-            .strip_prefix("data: ")
-            .or_else(|| line.strip_prefix("data:"))
-        {
-            Some(p) => p,
-            None => continue,
-        };
-        if !payload.contains("usage") {
-            continue;
-        }
-        let Some(v) = serde_json::from_str::<serde_json::Value>(payload).ok() else {
-            continue;
-        };
-        let Some(usage) = v.get("usage") else {
-            continue;
-        };
-        let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) else {
-            continue;
-        };
-        let Some(output) = usage.get("output_tokens").and_then(|v| v.as_u64()) else {
-            continue;
-        };
-        return Some(TokenUsage {
-            input_tokens: input,
-            output_tokens: output,
-        });
-    }
-    None
+    text.lines()
+        .rev()
+        .filter_map(|line| {
+            line.strip_prefix("data: ")
+                .or_else(|| line.strip_prefix("data:"))
+        })
+        .filter(|payload| payload.contains("usage"))
+        .filter_map(|payload| {
+            let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+            let usage = v.get("usage")?;
+            Some(TokenUsage {
+                input_tokens: usage.get("input_tokens")?.as_u64()?,
+                output_tokens: usage.get("output_tokens")?.as_u64()?,
+            })
+        })
+        .next()
 }
 
 fn rewrite_model(body: Bytes, mm: &ModelMap) -> (Bytes, bool) {
@@ -225,12 +212,20 @@ pub async fn proxy_handler(
     };
 
     if request_token != local_token {
+        if request_token.is_empty() {
+            warn!("auth failed: missing api key header");
+        } else {
+            warn!("auth failed: invalid api key");
+        }
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
     let backend = match backend_info {
         Some(b) => b,
-        None => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        None => {
+            error!("no active backend configured");
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
     };
 
     let target_url = format!(
@@ -254,12 +249,24 @@ pub async fn proxy_handler(
 
     let body_bytes = match axum::body::to_bytes(body, 200 * 1024 * 1024).await {
         Ok(b) => b,
-        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        Err(_) => {
+            warn!("request body too large or malformed");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
     };
 
+    let original_model = extract_model(&body_bytes);
     let (body_bytes, body_changed) = match backend.model_map.as_ref().filter(|mm| mm.has_any()) {
         Some(mm) => {
             let (rewritten, changed) = rewrite_model(body_bytes, mm);
+            if changed {
+                let new_model = extract_model(&rewritten);
+                debug!(
+                    original = original_model.as_deref().unwrap_or("(none)"),
+                    rewritten = new_model.as_deref().unwrap_or("(none)"),
+                    "model rewritten"
+                );
+            }
             (rewritten, changed)
         }
         None => (body_bytes, false),
@@ -328,6 +335,9 @@ pub async fn proxy_handler(
 
                 tokio::spawn(async move {
                     let usage = done_rx.await.unwrap_or(None);
+                    if usage.is_some() {
+                        debug!("sse stream completed, usage extracted");
+                    }
                     let entry = make_log_entry(
                         &backend_name,
                         start,
@@ -370,7 +380,8 @@ pub async fn proxy_handler(
                     .into_response()
             }
         }
-        Err(_) => {
+        Err(e) => {
+            error!(backend = %backend_name, "backend request failed: {}", e);
             let entry = make_log_entry(
                 &backend_name,
                 start,

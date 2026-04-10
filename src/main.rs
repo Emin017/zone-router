@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::{error, info};
 use zone_router::config::Config;
 use zone_router::state::AppState;
 
@@ -59,12 +60,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let listen_addr = app_state.config.proxy.listen.clone();
-    let local_token = app_state.local_token.clone();
 
     // Pre-bind the listener so port-in-use fails before TUI launch
     let listener = tokio::net::TcpListener::bind(&listen_addr)
         .await
         .map_err(|e| format!("Failed to bind to {listen_addr}: {e}"))?;
+
+    // Initialise structured logging before spawning any tasks.
+    let (log_rx, _log_guard, log_dir) = zone_router::logging::init_tracing();
+    if let Some(ref dir) = log_dir {
+        let today = chrono::Utc::now().format("%Y-%m-%d");
+        let log_file = dir.join(format!("zone-router.log.{today}"));
+        info!(path = %log_file.display(), "logging to file");
+    } else {
+        info!("file logging disabled (log directory not writable)");
+    }
 
     let state = Arc::new(RwLock::new(app_state));
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -75,16 +85,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             zone_router::proxy::server::start_with_listener(server_state, listener, shutdown_rx)
                 .await
         {
-            eprintln!("Proxy server error: {e}");
+            error!("proxy server fatal error: {}", e);
         }
     });
 
-    eprintln!("zone-router listening on {listen_addr}");
-    eprintln!("Local token: {local_token}");
+    zone_router::logging::log_server_started(&listen_addr);
+    info!("local token generated");
 
     let tui_state = state.clone();
-    let tui_handle =
-        tokio::task::spawn_blocking(move || zone_router::tui::app::run_tui(tui_state, shutdown_tx));
+    let tui_handle = tokio::task::spawn_blocking(move || {
+        zone_router::tui::app::run_tui(tui_state, shutdown_tx, log_rx)
+    });
 
     let _ = tui_handle.await;
 
